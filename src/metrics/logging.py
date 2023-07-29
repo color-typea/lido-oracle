@@ -1,6 +1,8 @@
 import json
 import logging
+import os
 
+LOGLEVEL = os.environ.get('LOGLEVEL', 'INFO').upper()
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -25,6 +27,6 @@ handler = logging.StreamHandler()
 handler.setFormatter(JsonFormatter())
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOGLEVEL,
     handlers=[handler],
 )

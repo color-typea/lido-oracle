@@ -1,5 +1,7 @@
 import json
 import logging
+from typing import Optional
+
 from time import sleep
 
 from web3 import Web3
@@ -15,6 +17,58 @@ from src.utils.cache import global_lru_cache as lru_cache
 
 logger = logging.getLogger()
 
+class LidoZKLLVMMinimalContracts(Module):
+    lido_locator: Contract
+    staking_router: Contract
+    zktvl_oracle_contract: Optional[Contract]
+
+    def __init__(self, w3: Web3):
+        super().__init__(w3)
+        self._load_contracts()
+
+    def __setattr__(self, key, value):
+        current_value = getattr(self, key, None)
+        if isinstance(current_value, Contract) and isinstance(value, Contract):
+            if value.address != current_value.address:
+                logger.info({'msg': f'Contract {key} has been changed to {value.address}'})
+        super().__setattr__(key, value)
+
+    def has_contract_address_changed(self) -> bool:
+        addresses = [contract.address for contract in self.__dict__.values() if isinstance(contract, Contract)]
+        self._load_contracts()
+        new_addresses = [contract.address for contract in self.__dict__.values() if isinstance(contract, Contract)]
+        return addresses != new_addresses
+
+    def _load_contracts(self):
+        # Contract that stores all lido contract addresses
+        self.lido_locator = self.w3.eth.contract(
+            address=variables.LIDO_LOCATOR_ADDRESS,
+            abi=self.load_abi('LidoLocator'),
+            decode_tuples=True,
+        )
+
+        self.staking_router = self.w3.eth.contract(
+            address=self.lido_locator.functions.stakingRouter().call(),
+            abi=self.load_abi('StakingRouter'),
+            decode_tuples=True,
+        )
+
+        if variables.ZKTVL_CONTRACT_ADDRESS:
+            self.zktvl_oracle_contract = self.w3.eth.contract(
+                # TODO: replace with call to lido_locator when ZKTVL oracle is full onboarded there
+                address=variables.ZKTVL_CONTRACT_ADDRESS,
+                abi=self.load_abi('ZKTVLOracleContract'),
+                decode_tuples=True,
+            )
+        else:
+            self.zktvl_oracle_contract = None
+
+    @staticmethod
+    def load_abi(abi_name: str, abi_path: str = './assets/'):
+        with open(f'{abi_path}{abi_name}.json') as f:
+            return json.load(f)
+
+
 
 class LidoContracts(Module):
     lido_locator: Contract
@@ -26,6 +80,7 @@ class LidoContracts(Module):
     oracle_report_sanity_checker: Contract
     oracle_daemon_config: Contract
     burner: Contract
+    zktvl_oracle_contract: Optional[Contract]
 
     def __init__(self, w3: Web3):
         super().__init__(w3)
@@ -115,6 +170,16 @@ class LidoContracts(Module):
             abi=self.load_abi('Burner'),
             decode_tuples=True,
         )
+
+        if variables.ZKTVL_CONTRACT_ADDRESS:
+            self.zktvl_oracle_contract = self.w3.eth.contract(
+                # TODO: replace with call to lido_locator when ZKTVL oracle is full onboarded there
+                address=variables.ZKTVL_CONTRACT_ADDRESS,
+                abi=self.load_abi('ZKTVLOracleContract'),
+                decode_tuples=True,
+            )
+        else:
+            self.zktvl_oracle_contract = None
 
         self._check_contracts()
 

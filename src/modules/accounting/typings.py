@@ -7,6 +7,23 @@ from web3.types import Wei
 from src.typings import SlotNumber, Gwei
 from src.web3py.extensions.lido_validators import StakingModuleId
 
+@dataclass
+class MinimalReportData:
+    consensus_version: int
+    ref_slot: SlotNumber
+    validators_count: int
+    cl_balance_gwei: Gwei
+    count_exited_validators: int
+
+    def as_tuple(self):
+        # Tuple with report in correct order
+        return (
+            self.consensus_version,
+            self.ref_slot,
+            self.validators_count,
+            self.cl_balance_gwei,
+            self.count_exited_validators,
+        )
 
 @dataclass
 class ReportData:

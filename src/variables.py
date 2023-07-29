@@ -3,8 +3,9 @@ import os
 from eth_account import Account
 
 # - Providers-
+RAW_CONSENSUS_CLIENT_URI = os.getenv('CONSENSUS_CLIENT_URI', '')
 EXECUTION_CLIENT_URI = os.getenv('EXECUTION_CLIENT_URI', '').split(',')
-CONSENSUS_CLIENT_URI = os.getenv('CONSENSUS_CLIENT_URI', '').split(',')
+CONSENSUS_CLIENT_URI = RAW_CONSENSUS_CLIENT_URI.split(',')
 KEYS_API_URI = os.getenv('KEYS_API_URI', '').split(',')
 
 # - Account -
@@ -73,6 +74,16 @@ HEALTHCHECK_SERVER_PORT = int(os.getenv('HEALTHCHECK_SERVER_PORT', 9010))
 
 MAX_CYCLE_LIFETIME_IN_SECONDS = int(os.getenv("MAX_CYCLE_LIFETIME_IN_SECONDS", 3000))
 
+
+# - ZK TVL Oracle -
+# The BeaconState endpoint is on /debug/ path, so most public services do not expose it
+# Hence, it is separated from CONSENSUS_CLIENT_URI - if the node/service you're using for CONSENSUS_CLIENT_URI
+# exposes /eth/v2/debug/beacon/states/{state_id} endpoint, it is totally fine to use the same value for
+# both. Otherwise,BEACON_STATE_CLIENT_URI allows you to override the setting.
+# Hint: beaconstate.info is a public service exposing that endpoint, but only with `Accept: application/octet-stream`
+CHAIN = os.getenv('CHAIN', 'mainnet')
+BEACON_STATE_CLIENT_URI = os.getenv('BEACON_STATE_CLIENT_URI', RAW_CONSENSUS_CLIENT_URI).split(',')
+ZKTVL_CONTRACT_ADDRESS = os.getenv('ZKTVL_CONTRACT_ADDRESS', '')
 
 def check_all_required_variables():
     errors = check_uri_required_variables()

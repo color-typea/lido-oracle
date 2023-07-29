@@ -196,40 +196,23 @@ class ConsensusModule(ABC):
         """
         latest_blockstamp = self._get_latest_blockstamp()
 
-        if not self._check_contract_versions(latest_blockstamp):
-            logger.info({
-                'msg': 'Oracle\'s version is higher than contract and/or consensus version. '
-                       'Skipping report. Waiting for Contracts to be updated.',
-            })
-            return None
-
-        # Check if contract is currently reportable
-        if not self.is_contract_reportable(latest_blockstamp):
-            logger.info({'msg': 'Contract is not reportable.'})
-            return None
-
-        member_info = self.get_member_info(latest_blockstamp)
-        logger.info({'msg': 'Fetch member info.', 'value': member_info})
-
-        # Check if current slot is higher than member slot
-        if last_finalized_blockstamp.slot_number < member_info.current_frame_ref_slot:
-            logger.info({'msg': 'Reference slot is not yet finalized.'})
-            return None
-
-        # Check latest block didn't miss the deadline.
-        if latest_blockstamp.slot_number >= member_info.deadline_slot:
-            logger.info({'msg': 'Deadline missed.'})
-            return None
-
         chain_config = self.get_chain_config(last_finalized_blockstamp)
         frame_config = self.get_frame_config(last_finalized_blockstamp)
+        current_frame = self.get_current_frame(latest_blockstamp)
 
         converter = Web3Converter(chain_config, frame_config)
 
+        # Meaningful change: previously, the report would be computed at the ref_slot,
+        # which is the last slot of the last epoch of the day.
+        # Unfortunately, BeaconState checkpoints are only offered publicly at the _first_ slot of
+        # an epoch.
+        # Practically, this is just "one slot ahead"
+        ref_slot = converter.get_first_slot_of_next_epoch(current_frame.ref_slot)
+
         bs = get_reference_blockstamp(
             cc=self.w3.cc,
-            ref_slot=member_info.current_frame_ref_slot,
-            ref_epoch=converter.get_epoch_by_slot(member_info.current_frame_ref_slot),
+            ref_slot=ref_slot,
+            ref_epoch=converter.get_epoch_by_slot(current_frame.ref_slot),
             last_finalized_slot_number=last_finalized_blockstamp.slot_number,
         )
         logger.info({'msg': 'Calculate blockstamp for report.', 'value': bs})

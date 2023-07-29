@@ -2,7 +2,39 @@ from src.typings import SlotNumber, EpochNumber, FrameNumber
 from src.modules.submodules.typings import ChainConfig, FrameConfig
 
 
-class Web3Converter:
+class Web3LightConverter:
+    """
+        The Web3LightConverter class contains methods for converting between slot and epoch using chain config
+        passed as argument when the class instance is created.
+    """
+
+    chain_config: ChainConfig
+
+    def __init__(self, chain_config: ChainConfig):
+        self.chain_config = chain_config
+
+    def get_epoch_first_slot(self, epoch: EpochNumber) -> SlotNumber:
+        return SlotNumber(epoch * self.chain_config.slots_per_epoch)
+
+    def get_epoch_by_slot(self, ref_slot: SlotNumber) -> EpochNumber:
+        return EpochNumber(self._get_epoch_by_slot_raw(ref_slot))
+
+    def get_epoch_by_timestamp(self, timestamp: int) -> EpochNumber:
+        return EpochNumber(self.get_slot_by_timestamp(timestamp) // self.chain_config.slots_per_epoch)
+
+    def get_slot_by_timestamp(self, timestamp: int) -> SlotNumber:
+        return SlotNumber((timestamp - self.chain_config.genesis_time) // self.chain_config.seconds_per_slot)
+
+    def get_first_slot_of_next_epoch(self, ref_slot: SlotNumber) -> SlotNumber:
+        epoch_raw = self._get_epoch_by_slot_raw(ref_slot)
+        next_epoch = EpochNumber(epoch_raw + 1)
+        return self.get_epoch_first_slot(next_epoch)
+
+    def _get_epoch_by_slot_raw(self, ref_slot: SlotNumber) -> int:
+        return ref_slot // self.chain_config.slots_per_epoch
+
+
+class Web3Converter(Web3LightConverter):
     """
     The Web3Converter class contains methods for converting between slot, epoch, and frame numbers using chain and
     frame settings passed as arguments when the class instance is created.
@@ -14,22 +46,24 @@ class Web3Converter:
     frame_config: FrameConfig
 
     def __init__(self, chain_config: ChainConfig, frame_config: FrameConfig):
-        self.chain_config = chain_config
+        super().__init__(chain_config)
         self.frame_config = frame_config
-
-    def get_epoch_first_slot(self, epoch: EpochNumber) -> SlotNumber:
-        return SlotNumber(epoch * self.chain_config.slots_per_epoch)
 
     def get_frame_last_slot(self, frame: FrameNumber) -> SlotNumber:
         return SlotNumber(self.get_frame_first_slot(FrameNumber(frame + 1)) - 1)
 
     def get_frame_first_slot(self, frame: FrameNumber) -> SlotNumber:
         return SlotNumber(
-            (self.frame_config.initial_epoch + frame * self.frame_config.epochs_per_frame) * self.chain_config.slots_per_epoch
+            (
+                        self.frame_config.initial_epoch + frame * self.frame_config.epochs_per_frame) *
+            self.chain_config.slots_per_epoch
         )
 
     def get_epoch_by_slot(self, ref_slot: SlotNumber) -> EpochNumber:
-        return EpochNumber(ref_slot // self.chain_config.slots_per_epoch)
+        return EpochNumber(self._get_epoch_by_slot_raw(ref_slot))
+
+    def _get_epoch_by_slot_raw(self, ref_slot: SlotNumber) -> int:
+        return ref_slot // self.chain_config.slots_per_epoch
 
     def get_epoch_by_timestamp(self, timestamp: int) -> EpochNumber:
         return EpochNumber(self.get_slot_by_timestamp(timestamp) // self.chain_config.slots_per_epoch)

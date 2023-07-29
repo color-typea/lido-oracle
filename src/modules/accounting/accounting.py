@@ -199,9 +199,9 @@ class Accounting(BaseModule, ConsensusModule):
         for (module_id, _), validators_exited_count in exited_validators_by_no.items():
             module_stats[module_id] += validators_exited_count
 
-        for module in staking_modules:
-            if module_stats[module.id] == module.exited_validators_count:
-                del module_stats[module.id]
+        # for module in staking_modules:
+        #     if module_stats[module.id] == module.exited_validators_count:
+        #         del module_stats[module.id]
 
         return list(module_stats.keys()), list(module_stats.values())
 
