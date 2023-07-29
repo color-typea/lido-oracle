@@ -29,7 +29,10 @@ class Web3Converter:
         )
 
     def get_epoch_by_slot(self, ref_slot: SlotNumber) -> EpochNumber:
-        return EpochNumber(ref_slot // self.chain_config.slots_per_epoch)
+        return EpochNumber(self._get_epoch_by_slot_raw(ref_slot))
+
+    def _get_epoch_by_slot_raw(self, ref_slot: SlotNumber) -> int:
+        return ref_slot // self.chain_config.slots_per_epoch
 
     def get_epoch_by_timestamp(self, timestamp: int) -> EpochNumber:
         return EpochNumber(self.get_slot_by_timestamp(timestamp) // self.chain_config.slots_per_epoch)
@@ -42,3 +45,8 @@ class Web3Converter:
 
     def get_frame_by_epoch(self, epoch: EpochNumber) -> FrameNumber:
         return FrameNumber((epoch - self.frame_config.initial_epoch) // self.frame_config.epochs_per_frame)
+
+    def get_first_slot_of_next_epoch(self, ref_slot: SlotNumber) -> SlotNumber:
+        epoch_raw = self._get_epoch_by_slot_raw(ref_slot)
+        next_epoch = EpochNumber(epoch_raw + 1)
+        return self.get_epoch_first_slot(next_epoch)

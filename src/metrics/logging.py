@@ -1,6 +1,8 @@
 import json
 import logging
+import os
 
+LOGLEVEL = os.environ.get('LOGLEVEL', 'INFO').upper()
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -15,16 +17,27 @@ class JsonFormatter(logging.Formatter):
             'funcName': record.funcName,
             'lineno': record.lineno,
             'module': record.module,
-            'pathname': record.pathname,
+            # 'pathname': record.pathname,
             **message,
         })
         return to_json_msg
 
 
+class StringFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        message = record.msg['msg'] if isinstance(record.msg, dict) else record.getMessage()
+        if isinstance(record.msg, dict) and 'value' in record.msg:
+            val_str = str(record.msg['value'])
+            return f"{message}: {val_str}"
+        else:
+            return message
+
+
 handler = logging.StreamHandler()
-handler.setFormatter(JsonFormatter())
+# handler.setFormatter(JsonFormatter())
+handler.setFormatter(StringFormatter())
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOGLEVEL,
     handlers=[handler],
 )
