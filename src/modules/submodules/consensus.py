@@ -29,14 +29,14 @@ from src.web3py.typings import Web3
 logger = logging.getLogger(__name__)
 
 
-class ConsensusModule(ABC):
+class ReportableModuleWithConsensusClient(ABC):
     """
     Module that works with Hash Consensus Contract.
 
-    Do next things:
+    Does the following:
     - Calculate report blockstamp if contract is reportable
-    - Calculates and sends report hash
-    - Decides in what order Oracles should report
+    - Checks report_contract and consensus contract versions
+    - submits the report to the report_contract
 
     report_contract should contain getConsensusContract method.
     """
@@ -82,11 +82,6 @@ class ConsensusModule(ABC):
     def _get_consensus_contract_address(self, blockstamp: BlockStamp) -> ChecksumAddress:
         return self.report_contract.functions.getConsensusContract().call(block_identifier=blockstamp.block_hash)
 
-    def _get_consensus_contract_members(self, blockstamp: BlockStamp):
-        consensus_contract = self._get_consensus_contract(blockstamp)
-        members, last_reported_ref_slots = consensus_contract.functions.getMembers().call(block_identifier=blockstamp.block_hash)
-        return members, last_reported_ref_slots
-
     @lru_cache(maxsize=1)
     def get_chain_config(self, blockstamp: BlockStamp) -> ChainConfig:
         consensus_contract = self._get_consensus_contract(blockstamp)
@@ -116,6 +111,139 @@ class ConsensusModule(ABC):
         )
         logger.info({'msg': 'Fetch frame config.', 'value': fc})
         return fc
+
+    # ----- Calculation reference slot for report -----
+    def get_blockstamp_for_report(self, last_finalized_blockstamp: BlockStamp) -> Optional[ReferenceBlockStamp]:
+        """
+        Get blockstamp that should be used to build and send report for current frame.
+        Returns:
+            Non-missed reference slot blockstamp in case contract is reportable.
+        """
+        latest_blockstamp = self._get_latest_blockstamp()
+
+        if not self._check_contract_versions(latest_blockstamp):
+            logger.info(
+                {
+                    'msg': 'Oracle\'s version is higher than contract and/or consensus version. '
+                           'Skipping report. Waiting for Contracts to be updated.',
+                }
+            )
+            return None
+
+        # Check if contract is currently reportable
+        if not self.is_contract_reportable(latest_blockstamp):
+            logger.info({'msg': 'Contract is not reportable.'})
+            return None
+
+        chain_config = self.get_chain_config(last_finalized_blockstamp)
+        frame_config = self.get_frame_config(last_finalized_blockstamp)
+        current_frame = self.get_current_frame(last_finalized_blockstamp)
+
+        converter = Web3Converter(chain_config, frame_config)
+
+        bs = get_reference_blockstamp(
+            cc=self.w3.cc,
+            ref_slot=current_frame.ref_slot,
+            ref_epoch=converter.get_epoch_by_slot(current_frame.ref_slot),
+            last_finalized_slot_number=last_finalized_blockstamp.slot_number,
+        )
+        logger.info({'msg': 'Calculate blockstamp for report.', 'value': bs})
+        return bs
+
+    def _check_contract_versions(self, blockstamp: BlockStamp) -> bool:
+        contract_version = self.report_contract.functions.getContractVersion().call(
+            block_identifier=blockstamp.block_hash
+        )
+        consensus_version = self.report_contract.functions.getConsensusVersion().call(
+            block_identifier=blockstamp.block_hash
+        )
+
+        if contract_version > self.CONTRACT_VERSION or consensus_version > self.CONSENSUS_VERSION:
+            raise IncompatibleContractVersion(
+                f'Incompatible Oracle version. '
+                f'Expected contract version {contract_version} got {self.CONTRACT_VERSION}. '
+                f'Expected consensus version {consensus_version} got {self.CONSENSUS_VERSION}.'
+            )
+
+        compatibility = contract_version == self.CONTRACT_VERSION and consensus_version == self.CONSENSUS_VERSION
+
+        if not compatibility:
+            logger.warning(
+                {
+                    'msg': f'Oracle\'s version higher than contract supports. '
+                           f'Expected contract version {contract_version} got {self.CONTRACT_VERSION}. '
+                           f'Expected consensus version {consensus_version} got {self.CONSENSUS_VERSION}.'
+                }
+            )
+
+        return compatibility
+
+    def _get_latest_blockstamp(self) -> BlockStamp:
+        root = self.w3.cc.get_block_root('head').root
+        block_details = self.w3.cc.get_block_details(root)
+        bs = build_blockstamp(block_details)
+        logger.debug({'msg': 'Fetch latest blockstamp.', 'value': bs})
+        ORACLE_SLOT_NUMBER.labels('head').set(bs.slot_number)
+        ORACLE_BLOCK_NUMBER.labels('head').set(bs.block_number)
+
+        if variables.ACCOUNT:
+            ACCOUNT_BALANCE.labels(str(variables.ACCOUNT.address)).set(
+                self.w3.eth.get_balance(variables.ACCOUNT.address)
+            )
+
+        return bs
+
+    # ----- Working with report -----
+    def process_report(self, blockstamp: ReferenceBlockStamp) -> None:
+        """Builds and sends report for current frame with provided blockstamp."""
+        report_data = self.build_report(blockstamp)
+        logger.info({'msg': 'Build report.', 'value': report_data})
+        # We need to check whether report has unexpected data before sending.
+        # otherwise we have to check it manually.
+        if not self.is_reporting_allowed(blockstamp):
+            logger.warning({'msg': 'Reporting checks are not passed. Report will not be sent.'})
+            return
+
+        logger.info({'msg': f'Send report data. Contract version: [{self.CONTRACT_VERSION}]'})
+        self._submit_report(report_data, self.CONTRACT_VERSION)
+
+    def _submit_report(self, report: tuple, contract_version: int):
+        tx = self.report_contract.functions.submitReportData(report, contract_version)
+
+        self.w3.transaction.check_and_send_transaction(tx, variables.ACCOUNT)
+
+    @abstractmethod
+    @lru_cache(maxsize=1)
+    def build_report(self, blockstamp: ReferenceBlockStamp) -> tuple:
+        """Returns ReportData struct with calculated data."""
+
+    @abstractmethod
+    def is_reporting_allowed(self, blockstamp: ReferenceBlockStamp) -> bool:
+        """Check if collected build output is unexpected and need to be checked manually."""
+    @abstractmethod
+    def is_contract_reportable(self, blockstamp: BlockStamp) -> bool:
+        """Returns true if contract is ready for report"""
+
+
+class ConsensusModule(ReportableModuleWithConsensusClient, ABC):
+    """
+    Module that works with Hash Consensus Contract.
+
+    Does all that `ReportableModuleWithConsensusClient` do, and also:
+    - Obtains member info
+    - Calculates and sends report hash
+    - Decides in what order Oracles should report
+
+    report_contract should contain getConsensusContract method.
+    """
+    def __init__(self, w3: Web3):
+        super().__init__(w3)
+
+    # ----- Web3 data requests -----
+    def _get_consensus_contract_members(self, blockstamp: BlockStamp):
+        consensus_contract = self._get_consensus_contract(blockstamp)
+        members, last_reported_ref_slots = consensus_contract.functions.getMembers().call(block_identifier=blockstamp.block_hash)
+        return members, last_reported_ref_slots
 
     @lru_cache(maxsize=1)
     def get_member_info(self, blockstamp: BlockStamp) -> MemberInfo:
@@ -191,6 +319,9 @@ class ConsensusModule(ABC):
     def get_blockstamp_for_report(self, last_finalized_blockstamp: BlockStamp) -> Optional[ReferenceBlockStamp]:
         """
         Get blockstamp that should be used to build and send report for current frame.
+
+        Note: Overrides ReportableModuleWithConsensusClient.get_blockstamp_for_report
+
         Returns:
             Non-missed reference slot blockstamp in case contract is reportable.
         """
@@ -235,31 +366,13 @@ class ConsensusModule(ABC):
         logger.info({'msg': 'Calculate blockstamp for report.', 'value': bs})
         return bs
 
-    def _check_contract_versions(self, blockstamp: BlockStamp) -> bool:
-        contract_version = self.report_contract.functions.getContractVersion().call(block_identifier=blockstamp.block_hash)
-        consensus_version = self.report_contract.functions.getConsensusVersion().call(block_identifier=blockstamp.block_hash)
-
-        if contract_version > self.CONTRACT_VERSION or consensus_version > self.CONSENSUS_VERSION:
-            raise IncompatibleContractVersion(
-                f'Incompatible Oracle version. '
-                f'Expected contract version {contract_version} got {self.CONTRACT_VERSION}. '
-                f'Expected consensus version {consensus_version} got {self.CONSENSUS_VERSION}.'
-            )
-
-        compatibility = contract_version == self.CONTRACT_VERSION and consensus_version == self.CONSENSUS_VERSION
-
-        if not compatibility:
-            logger.warning({
-                'msg': f'Oracle\'s version higher than contract supports. '
-                       f'Expected contract version {contract_version} got {self.CONTRACT_VERSION}. '
-                       f'Expected consensus version {consensus_version} got {self.CONSENSUS_VERSION}.'
-            })
-
-        return compatibility
-
     # ----- Working with report -----
     def process_report(self, blockstamp: ReferenceBlockStamp) -> None:
-        """Builds and sends report for current frame with provided blockstamp."""
+        """
+        Builds and sends report for current frame with provided blockstamp.
+
+        Note: Overrides ReportableModuleWithConsensusClient.process_report
+        """
         report_data = self.build_report(blockstamp)
         logger.info({'msg': 'Build report.', 'value': report_data})
 
@@ -338,8 +451,8 @@ class ConsensusModule(ABC):
             logger.info({'msg': 'Main data already submitted.'})
             return
 
-        logger.info({'msg': f'Send report data. Contract version: [{self.CONTRACT_VERSION}]'})
         # If data already submitted transaction will be locally reverted, no need to check status manually
+        logger.info({'msg': f'Send report data. Contract version: [{self.CONTRACT_VERSION}]'})
         self._submit_report(report_data, self.CONTRACT_VERSION)
 
     def _get_latest_data(self) -> tuple[BlockStamp, MemberInfo]:
@@ -390,25 +503,6 @@ class ConsensusModule(ABC):
 
         self.w3.transaction.check_and_send_transaction(tx, variables.ACCOUNT)
 
-    def _submit_report(self, report: tuple, contract_version: int):
-        tx = self.report_contract.functions.submitReportData(report, contract_version)
-
-        self.w3.transaction.check_and_send_transaction(tx, variables.ACCOUNT)
-
-    def _get_latest_blockstamp(self) -> BlockStamp:
-        root = self.w3.cc.get_block_root('head').root
-        block_details = self.w3.cc.get_block_details(root)
-        bs = build_blockstamp(block_details)
-        logger.debug({'msg': 'Fetch latest blockstamp.', 'value': bs})
-        ORACLE_SLOT_NUMBER.labels('head').set(bs.slot_number)
-        ORACLE_BLOCK_NUMBER.labels('head').set(bs.block_number)
-
-        if variables.ACCOUNT:
-            ACCOUNT_BALANCE.labels(str(variables.ACCOUNT.address)).set(
-                self.w3.eth.get_balance(variables.ACCOUNT.address)
-            )
-
-        return bs
 
     @lru_cache(maxsize=1)
     def _get_slot_delay_before_data_submit(self, blockstamp: BlockStamp) -> int:
@@ -449,18 +543,5 @@ class ConsensusModule(ABC):
         return total_delay
 
     @abstractmethod
-    @lru_cache(maxsize=1)
-    def build_report(self, blockstamp: ReferenceBlockStamp) -> tuple:
-        """Returns ReportData struct with calculated data."""
-
-    @abstractmethod
     def is_main_data_submitted(self, blockstamp: BlockStamp) -> bool:
         """Returns if main data already submitted"""
-
-    @abstractmethod
-    def is_contract_reportable(self, blockstamp: BlockStamp) -> bool:
-        """Returns true if contract is ready for report"""
-
-    @abstractmethod
-    def is_reporting_allowed(self, blockstamp: ReferenceBlockStamp) -> bool:
-        """Check if collected build output is unexpected and need to be checked manually."""
