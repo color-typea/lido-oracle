@@ -1,0 +1,265 @@
+[
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "zkllvmVerifier_",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "verificationGate_",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "beaconBlockHashProvider_",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "lidoLocator_",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "nonpayable",
+      "type": "constructor"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "expected",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "received",
+          "type": "uint256"
+        }
+      ],
+      "name": "UnexpectedContractVersion",
+      "type": "error"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "uint256",
+              "name": "slot",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "epoch",
+              "type": "uint256"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "lidoWithdrawalCredentials",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "activeValidators",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exitedValidators",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "totalValueLocked",
+              "type": "uint256"
+            }
+          ],
+          "indexed": false,
+          "internalType": "struct ZKTVLOracleContract.OracleReport",
+          "name": "report",
+          "type": "tuple"
+        }
+      ],
+      "name": "ReportAccepted",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "uint256",
+              "name": "slot",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "epoch",
+              "type": "uint256"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "lidoWithdrawalCredentials",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "activeValidators",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exitedValidators",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "totalValueLocked",
+              "type": "uint256"
+            }
+          ],
+          "indexed": false,
+          "internalType": "struct ZKTVLOracleContract.OracleReport",
+          "name": "report",
+          "type": "tuple"
+        },
+        {
+          "indexed": false,
+          "internalType": "string",
+          "name": "reason",
+          "type": "string"
+        }
+      ],
+      "name": "ReportRejected",
+      "type": "event"
+    },
+    {
+      "inputs": [],
+      "name": "contractVersion",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "getLastReport",
+      "outputs": [
+        {
+          "components": [
+            {
+              "internalType": "uint256",
+              "name": "slot",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "epoch",
+              "type": "uint256"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "lidoWithdrawalCredentials",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "activeValidators",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exitedValidators",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "totalValueLocked",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct ZKTVLOracleContract.OracleReport",
+          "name": "result",
+          "type": "tuple"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "uint256",
+              "name": "slot",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "epoch",
+              "type": "uint256"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "lidoWithdrawalCredentials",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "activeValidators",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exitedValidators",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "totalValueLocked",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct ZKTVLOracleContract.OracleReport",
+          "name": "report",
+          "type": "tuple"
+        },
+        {
+          "components": [
+            {
+              "internalType": "bytes32",
+              "name": "beaconBlockHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "bytes",
+              "name": "zkProof",
+              "type": "bytes"
+            }
+          ],
+          "internalType": "struct ZKTVLOracleContract.OracleProof",
+          "name": "proof",
+          "type": "tuple"
+        },
+        {
+          "internalType": "uint256",
+          "name": "version",
+          "type": "uint256"
+        }
+      ],
+      "name": "submitReportData",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    }
+  ]

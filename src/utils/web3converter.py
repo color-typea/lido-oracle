@@ -17,13 +17,21 @@ class Web3LightConverter:
         return SlotNumber(epoch * self.chain_config.slots_per_epoch)
 
     def get_epoch_by_slot(self, ref_slot: SlotNumber) -> EpochNumber:
-        return EpochNumber(ref_slot // self.chain_config.slots_per_epoch)
+        return EpochNumber(self._get_epoch_by_slot_raw(ref_slot))
 
     def get_epoch_by_timestamp(self, timestamp: int) -> EpochNumber:
         return EpochNumber(self.get_slot_by_timestamp(timestamp) // self.chain_config.slots_per_epoch)
 
     def get_slot_by_timestamp(self, timestamp: int) -> SlotNumber:
         return SlotNumber((timestamp - self.chain_config.genesis_time) // self.chain_config.seconds_per_slot)
+
+    def get_first_slot_of_next_epoch(self, ref_slot: SlotNumber) -> SlotNumber:
+        epoch_raw = self._get_epoch_by_slot_raw(ref_slot)
+        next_epoch = EpochNumber(epoch_raw + 1)
+        return self.get_epoch_first_slot(next_epoch)
+
+    def _get_epoch_by_slot_raw(self, ref_slot: SlotNumber) -> int:
+        return ref_slot // self.chain_config.slots_per_epoch
 
 
 class Web3Converter(Web3LightConverter):

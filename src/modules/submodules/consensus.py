@@ -79,8 +79,9 @@ class ReportableModuleWithConsensusClient(ABC):
             decode_tuples=True,
         )
 
+    @abstractmethod
     def _get_consensus_contract_address(self, blockstamp: BlockStamp) -> ChecksumAddress:
-        return self.report_contract.functions.getConsensusContract().call(block_identifier=blockstamp.block_hash)
+        """ Returns the address of the Consensus Contract associated with this module"""
 
     @lru_cache(maxsize=1)
     def get_chain_config(self, blockstamp: BlockStamp) -> ChainConfig:
@@ -113,42 +114,13 @@ class ReportableModuleWithConsensusClient(ABC):
         return fc
 
     # ----- Calculation reference slot for report -----
+    @abstractmethod
     def get_blockstamp_for_report(self, last_finalized_blockstamp: BlockStamp) -> Optional[ReferenceBlockStamp]:
         """
         Get blockstamp that should be used to build and send report for current frame.
         Returns:
             Non-missed reference slot blockstamp in case contract is reportable.
         """
-        latest_blockstamp = self._get_latest_blockstamp()
-
-        if not self._check_contract_versions(latest_blockstamp):
-            logger.info(
-                {
-                    'msg': 'Oracle\'s version is higher than contract and/or consensus version. '
-                           'Skipping report. Waiting for Contracts to be updated.',
-                }
-            )
-            return None
-
-        # Check if contract is currently reportable
-        if not self.is_contract_reportable(latest_blockstamp):
-            logger.info({'msg': 'Contract is not reportable.'})
-            return None
-
-        chain_config = self.get_chain_config(last_finalized_blockstamp)
-        frame_config = self.get_frame_config(last_finalized_blockstamp)
-        current_frame = self.get_current_frame(last_finalized_blockstamp)
-
-        converter = Web3Converter(chain_config, frame_config)
-
-        bs = get_reference_blockstamp(
-            cc=self.w3.cc,
-            ref_slot=current_frame.ref_slot,
-            ref_epoch=converter.get_epoch_by_slot(current_frame.ref_slot),
-            last_finalized_slot_number=last_finalized_blockstamp.slot_number,
-        )
-        logger.info({'msg': 'Calculate blockstamp for report.', 'value': bs})
-        return bs
 
     def _check_contract_versions(self, blockstamp: BlockStamp) -> bool:
         contract_version = self.report_contract.functions.getContractVersion().call(
@@ -240,6 +212,8 @@ class ConsensusModule(ReportableModuleWithConsensusClient, ABC):
         super().__init__(w3)
 
     # ----- Web3 data requests -----
+    def _get_consensus_contract_address(self, blockstamp: BlockStamp) -> ChecksumAddress:
+        return self.report_contract.functions.getConsensusContract().call(block_identifier=blockstamp.block_hash)
     def _get_consensus_contract_members(self, blockstamp: BlockStamp):
         consensus_contract = self._get_consensus_contract(blockstamp)
         members, last_reported_ref_slots = consensus_contract.functions.getMembers().call(block_identifier=blockstamp.block_hash)
