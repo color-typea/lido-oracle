@@ -11,6 +11,8 @@ from src.metrics.prometheus.basic import ENV_VARIABLES_INFO, BUILD_INFO
 from src.modules.accounting.accounting import Accounting
 from src.modules.ejector.ejector import Ejector
 from src.modules.checks.checks_module import ChecksModule
+from src.modules.zk_accounting_sanity_check.proof_producer import ProofProducerFactory
+from src.modules.zk_accounting_sanity_check.zk_accounting_sanity_check import ZKAccountingSanityCheck
 from src.typings import OracleModule
 from src.utils.build import get_build_info
 from src.web3py.extensions import (
@@ -21,6 +23,7 @@ from src.web3py.extensions import (
     LidoValidatorsProvider,
     FallbackProviderModule
 )
+from src.web3py.extensions.beacon_state import BeaconStateClientModule
 from src.web3py.middleware import metrics_collector
 from src.web3py.typings import Web3
 
@@ -93,6 +96,11 @@ def main(module_name: OracleModule):
     elif module_name == OracleModule.EJECTOR:
         logger.info({'msg': 'Initialize Ejector module.'})
         instance = Ejector(web3)  # type: ignore[assignment]
+    elif module_name == OracleModule.ZK_ACCOUNTING_SANITY_CHECK:
+        logger.info({'msg': 'Initialize Ejector module.'})
+        beacon_state_client = BeaconStateClientModule(variables.BEACON_STATE_CLIENT_URI, web3)
+        proof_producer = ProofProducerFactory.create()
+        instance = ZKAccountingSanityCheck(web3, beacon_state_client, proof_producer)
     else:
         raise ValueError(f'Unexpected arg: {module_name=}.')
 

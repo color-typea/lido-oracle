@@ -10,6 +10,7 @@ class OracleModule(StrEnum):
     ACCOUNTING = 'accounting'
     EJECTOR = 'ejector'
     CHECK = 'check'
+    ZK_ACCOUNTING_SANITY_CHECK = 'zk_accounting_sanity_check'
 
 
 EpochNumber = NewType('EpochNumber', int)

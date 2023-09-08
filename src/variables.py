@@ -84,6 +84,16 @@ MAX_CYCLE_LIFETIME_IN_SECONDS = int(os.getenv("MAX_CYCLE_LIFETIME_IN_SECONDS", 3
 CHAIN = os.getenv('CHAIN', 'mainnet')
 BEACON_STATE_CLIENT_URI = os.getenv('BEACON_STATE_CLIENT_URI', RAW_CONSENSUS_CLIENT_URI).split(',')
 ZKTVL_CONTRACT_ADDRESS = os.getenv('ZKTVL_CONTRACT_ADDRESS', '')
+PROOF_PRODUCER_MODE = os.getenv('PROOF_PRODUCER_MODE', '')
+# Set if PROOF_PRODUCER_MODE == "precomputed"
+PROOF_FILE = os.getenv('PROOF_FILE', '')
+# Set if PROOF_PRODUCER_MODE == "commandline"
+PROOF_GENERATOR_BIN = os.getenv('PROOF_GENERATOR_BIN', '')
+PROOF_CIRCUIT_STATEMENT = os.getenv('PROOF_CIRCUIT_STATEMENT', '')
+# Set if PROOF_PRODUCER_MODE == "proof_market"
+PROOF_MARKET_USERNAME = os.getenv('PROOF_MARKET_USERNAME', '')
+PROOF_MARKET_PASSWORD = os.getenv('PROOF_MARKET_PASSWORD', '')
+PROOF_MARKET_CIRCUIT_STATEMENT_KEY = os.getenv('PROOF_MARKET_CIRCUIT_STATEMENT_KEY', '')
 
 def check_all_required_variables():
     errors = check_uri_required_variables()

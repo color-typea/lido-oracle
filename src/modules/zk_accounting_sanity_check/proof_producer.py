@@ -4,8 +4,18 @@ import os
 import subprocess
 import sys
 import tempfile
+from enum import StrEnum
 from typing import Any, List, Dict
 from abc import ABCMeta, abstractmethod
+
+from src import variables
+
+
+class ProofProducerMode(StrEnum):
+    PRECOMPUTED = 'precomputed'
+    COMMANDLINE = 'commandline'
+    PROOF_MARKET = 'proof_market'
+
 
 FieldType = (str, str)
 
@@ -85,3 +95,56 @@ class ProofGeneratorCLIProofProducer(ProofProducer):
             proof = bytes.fromhex(proof_hex[2:])
 
         return proof
+
+
+Errors = list[str]
+
+class ProofProducerFactory:
+    @classmethod
+    def create(cls) -> ProofProducer:
+        mode = variables.PROOF_PRODUCER_MODE
+        if mode == ProofProducerMode.PRECOMPUTED:
+            factory = cls._precomputed
+        elif mode == ProofProducerMode.COMMANDLINE:
+            factory =cls._cmdline
+        elif mode == ProofProducerMode.PROOF_MARKET:
+            factory = cls._proof_market
+        else:
+            raise ValueError(f"Proof producer mode {mode} is unsupported - please check your .env file")
+
+        producer, errors = factory()
+
+        if errors:
+            errors_str = "\n".join(errors)
+            raise ValueError(
+                f"Encountered errors creating a ProofProducer with PROOF_PRODUCER_MODE={mode}\n{errors_str}"
+            )
+
+        return producer
+
+    @classmethod
+    def _check_file_exists(cls, file_path):
+        return file_path and os.path.exists(variables.PROOF_FILE) and os.path.isfile(file_path)
+
+    @classmethod
+    def _precomputed(cls) -> (ProofProducer, Errors):
+        if not cls._check_file_exists(variables.PROOF_FILE):
+            return None, ["PROOF_FILE must be a path to a file"]
+        return PrecomputedProofProducer(variables.PROOF_FILE), None
+
+    @classmethod
+    def _cmdline(cls) -> (ProofProducer, Errors):
+        errors = []
+        if not cls._check_file_exists(variables.PROOF_GENERATOR_BIN):
+            errors.append(f"PROOF_GENERATOR_BIN must be a path to a file")
+        if not cls._check_file_exists(variables.PROOF_CIRCUIT_STATEMENT):
+            errors.append(f"PROOF_CIRCUIT_STATEMENT must be a path to a file")
+
+        if errors:
+            return None, errors
+
+        return ProofGeneratorCLIProofProducer(variables.PROOF_GENERATOR_BIN, variables.PROOF_CIRCUIT_STATEMENT), None
+
+    @classmethod
+    def _proof_market(cls) -> (ProofProducer, Errors):
+        raise NotImplementedError("ZKLLVM Proof market integration is not yet implemented")
