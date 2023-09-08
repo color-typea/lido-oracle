@@ -8,7 +8,6 @@ from web3.types import Timestamp
 
 class OracleModule(StrEnum):
     ACCOUNTING = 'accounting'
-    ACCOUNTING_MIN = 'accounting_min'
     EJECTOR = 'ejector'
     CHECK = 'check'
 
