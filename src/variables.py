@@ -81,7 +81,6 @@ MAX_CYCLE_LIFETIME_IN_SECONDS = int(os.getenv("MAX_CYCLE_LIFETIME_IN_SECONDS", 3
 # exposes /eth/v2/debug/beacon/states/{state_id} endpoint, it is totally fine to use the same value for
 # both. Otherwise,BEACON_STATE_CLIENT_URI allows you to override the setting.
 # Hint: beaconstate.info is a public service exposing that endpoint, but only with `Accept: application/octet-stream`
-CHAIN = os.getenv('CHAIN', 'mainnet')
 BEACON_STATE_CLIENT_URI = os.getenv('BEACON_STATE_CLIENT_URI', RAW_CONSENSUS_CLIENT_URI).split(',')
 ZKTVL_CONTRACT_ADDRESS = os.getenv('ZKTVL_CONTRACT_ADDRESS', '')
 PROOF_PRODUCER_MODE = os.getenv('PROOF_PRODUCER_MODE', '')
