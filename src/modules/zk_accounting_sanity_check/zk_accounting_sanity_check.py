@@ -23,14 +23,12 @@ from src.web3py.extensions.beacon_state import BeaconStateClientModule
 from src.web3py.typings import Web3
 from src.metrics.logging import logging
 from src.typings import SlotNumber, BlockStamp, ReferenceBlockStamp
-from src.web3py.extensions import ConsensusClientModule
 
 logger = logging.getLogger()
 
 
 class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
     w3: Web3
-    _bsc: BeaconStateClientModule
     _proof_producer: ProofProducer
 
     LOGGER = logging.getLogger(__name__ + ".ZKAccountingSanityCheck")
@@ -38,13 +36,9 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
     report_contract: Contract
     CONTRACT_VERSION = 1
 
-    def __init__(
-            self, web3: Web3, bsc: BeaconStateClientModule,
-            proof_producer: ProofProducer
-    ):
+    def __init__(self, web3: Web3,proof_producer: ProofProducer):
         super().__init__(web3)
         self.w3 = web3
-        self._bsc = bsc
         self._proof_producer = proof_producer
         self.refresh_contracts()
 
@@ -149,7 +143,7 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
 
     def _download_beacon_state(self, slot: SlotNumber, destination: io.BinaryIO):
         self.LOGGER.info({"msg": f"Downloading Beacon State for {slot} to {destination}"})
-        self._bsc.load_beacon_state(slot, destination)
+        self.w3.bsc.load_beacon_state(slot, destination)
         self.LOGGER.debug({"msg": f"Downloaded Beacon State for {slot} to {destination}"})
 
     def _build_report_data(

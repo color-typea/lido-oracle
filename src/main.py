@@ -71,18 +71,14 @@ def main(module_name: OracleModule):
     logger.info({'msg': 'Initialize consensus client.'})
     cc = ConsensusClientModule(variables.CONSENSUS_CLIENT_URI, web3)
 
-    logger.info({'msg': 'Initialize keys api client.'})
-    kac = KeysAPIClientModule(variables.KEYS_API_URI, web3)
-
-    check_providers_chain_ids(web3, cc, kac)
-
-    web3.attach_modules({
-        'lido_contracts': LidoContracts,
-        'lido_validators': LidoValidatorsProvider,
-        'transaction': TransactionUtils,
-        'cc': lambda: cc,  # type: ignore[dict-item]
-        'kac': lambda: kac,  # type: ignore[dict-item]
-    })
+    web3.attach_modules(
+        {
+            'lido_contracts': LidoContracts,
+            'lido_validators': LidoValidatorsProvider,
+            'transaction': TransactionUtils,
+            'cc': lambda: cc,  # type: ignore[dict-item]
+        }
+    )
 
     logger.info({'msg': 'Add metrics middleware for ETH1 requests.'})
     web3.middleware_onion.add(metrics_collector)
@@ -91,19 +87,47 @@ def main(module_name: OracleModule):
     logger.info({'msg': 'Sanity checks.'})
 
     if module_name == OracleModule.ACCOUNTING:
+        logger.info({'msg': 'Initialize keys api client.'})
+        # type: ignore[dict-item]
+        web3.attach_modules(
+            {
+                'kac': lambda: KeysAPIClientModule(variables.KEYS_API_URI, web3),
+                'bsc': lambda: None
+            }
+        )
         logger.info({'msg': 'Initialize Accounting module.'})
         instance = Accounting(web3)
     elif module_name == OracleModule.EJECTOR:
+        logger.info({'msg': 'Initialize keys api client.'})
+        # type: ignore[dict-item]
+        web3.attach_modules(
+            {
+                'kac': lambda: KeysAPIClientModule(variables.KEYS_API_URI, web3),
+                'bsc': lambda: None
+            }
+        )
         logger.info({'msg': 'Initialize Ejector module.'})
         instance = Ejector(web3)  # type: ignore[assignment]
     elif module_name == OracleModule.ZK_ACCOUNTING_SANITY_CHECK:
-        logger.info({'msg': 'Initialize Ejector module.'})
-        beacon_state_client = BeaconStateClientModule(variables.BEACON_STATE_CLIENT_URI, web3)
+        logger.info({'msg': 'Initialize Beacon State Client.'})
+        # type: ignore[dict-item]
+        web3.attach_modules(
+            {
+                'ksc': lambda: None,
+                'bsc': lambda: BeaconStateClientModule(variables.BEACON_STATE_CLIENT_URI, web3),
+            }
+        )
+        logger.info({'msg': 'Initialize Proof Producer.'})
         proof_producer = ProofProducerFactory.create()
-        instance = ZKAccountingSanityCheck(web3, beacon_state_client, proof_producer)
+        logger.info({'msg': 'Initialize ZKAccountingSanityCheck module.'})
+        instance = ZKAccountingSanityCheck(web3, proof_producer)
     else:
         raise ValueError(f'Unexpected arg: {module_name=}.')
 
+    logger.info({'msg': 'Checking provider chain IDs.'})
+    web3.check_providers_chain_ids()
+
+    logger.info({'msg': "Checking module's contract configuration."})
     instance.check_contract_configs()
 
     if variables.DAEMON:
@@ -116,20 +140,6 @@ def check():
     logger.info({'msg': 'Check oracle is ready to work in the current environment.'})
 
     return ChecksModule().execute_module()
-
-
-def check_providers_chain_ids(web3: Web3, cc: ConsensusClientModule, kac: KeysAPIClientModule):
-    keys_api_chain_id = kac.check_providers_consistency()
-    consensus_chain_id = cc.check_providers_consistency()
-    execution_chain_id = cast(FallbackProviderModule, web3.provider).check_providers_consistency()
-
-    if execution_chain_id == consensus_chain_id == keys_api_chain_id:
-        return
-
-    raise ValueError('Different chain ids detected:\n'
-                     f'Execution chain id: {execution_chain_id}\n'
-                     f'Consensus chain id: {consensus_chain_id}\n'
-                     f'Keys API chain id: {keys_api_chain_id}\n')
 
 
 if __name__ == '__main__':

@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from src.metrics.logging import logging
 from src.metrics.prometheus.basic import CL_REQUESTS_DURATION
 from src.providers.common_typings import StateIdWithLiteral
+from src.providers.consensus.typings import BeaconSpecResponse
 from src.providers.http_provider import HTTPProvider, NotOkResponse
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ class BeaconStateClient(HTTPProvider):
     PROMETHEUS_HISTOGRAM = CL_REQUESTS_DURATION
 
     API_GET_BEACON_STATE = '/eth/v2/debug/beacon/states/{}'
+    API_GET_SPEC = 'eth/v1/config/spec'
     
     def load_beacon_state(self, state_id: StateIdWithLiteral, destination: io.BinaryIO):
         """
@@ -133,3 +135,8 @@ class BeaconStateClient(HTTPProvider):
                 )
                 raise error
 
+    def _get_chain_id_with_provider(self, provider_index: int) -> int:
+        data, _ = self._get_without_fallbacks(self.hosts[provider_index], self.API_GET_SPEC)
+        if not isinstance(data, dict):
+            raise ValueError("Expected mapping response from getSpec")
+        return int(BeaconSpecResponse.from_response(**data).DEPOSIT_CHAIN_ID)
