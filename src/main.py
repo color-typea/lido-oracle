@@ -29,28 +29,31 @@ from src.web3py.typings import Web3
 
 from src.web3py.contract_tweak import tweak_w3_contracts
 
-
 logger = logging.getLogger()
 
 
 def main(module_name: OracleModule):
     build_info = get_build_info()
-    logger.info({
-        'msg': 'Oracle startup.',
-        'variables': {
-            **build_info,
-            'module': module_name,
-            'ACCOUNT': variables.ACCOUNT.address if variables.ACCOUNT else 'Dry',
-            'LIDO_LOCATOR_ADDRESS': variables.LIDO_LOCATOR_ADDRESS,
-            'MAX_CYCLE_LIFETIME_IN_SECONDS': variables.MAX_CYCLE_LIFETIME_IN_SECONDS,
-        },
-    })
-    ENV_VARIABLES_INFO.info({
-        "ACCOUNT": str(variables.ACCOUNT.address) if variables.ACCOUNT else 'Dry',
-        "LIDO_LOCATOR_ADDRESS": str(variables.LIDO_LOCATOR_ADDRESS),
-        "FINALIZATION_BATCH_MAX_REQUEST_COUNT": str(variables.FINALIZATION_BATCH_MAX_REQUEST_COUNT),
-        "MAX_CYCLE_LIFETIME_IN_SECONDS": str(variables.MAX_CYCLE_LIFETIME_IN_SECONDS),
-    })
+    logger.info(
+        {
+            'msg': 'Oracle startup.',
+            'variables': {
+                **build_info,
+                'module': module_name,
+                'ACCOUNT': variables.ACCOUNT.address if variables.ACCOUNT else 'Dry',
+                'LIDO_LOCATOR_ADDRESS': variables.LIDO_LOCATOR_ADDRESS,
+                'MAX_CYCLE_LIFETIME_IN_SECONDS': variables.MAX_CYCLE_LIFETIME_IN_SECONDS,
+            },
+        }
+    )
+    ENV_VARIABLES_INFO.info(
+        {
+            "ACCOUNT": str(variables.ACCOUNT.address) if variables.ACCOUNT else 'Dry',
+            "LIDO_LOCATOR_ADDRESS": str(variables.LIDO_LOCATOR_ADDRESS),
+            "FINALIZATION_BATCH_MAX_REQUEST_COUNT": str(variables.FINALIZATION_BATCH_MAX_REQUEST_COUNT),
+            "MAX_CYCLE_LIFETIME_IN_SECONDS": str(variables.MAX_CYCLE_LIFETIME_IN_SECONDS),
+        }
+    )
     BUILD_INFO.info(build_info)
 
     logger.info({'msg': f'Start healthcheck server for Docker container on port {variables.HEALTHCHECK_SERVER_PORT}'})
@@ -60,10 +63,12 @@ def main(module_name: OracleModule):
     start_http_server(variables.PROMETHEUS_PORT)
 
     logger.info({'msg': 'Initialize multi web3 provider.'})
-    web3 = Web3(FallbackProviderModule(
-        variables.EXECUTION_CLIENT_URI,
-        request_kwargs={'timeout': variables.HTTP_REQUEST_TIMEOUT_EXECUTION}
-    ))
+    web3 = Web3(
+        FallbackProviderModule(
+            variables.EXECUTION_CLIENT_URI,
+            request_kwargs={'timeout': variables.HTTP_REQUEST_TIMEOUT_EXECUTION}
+        )
+    )
 
     logger.info({'msg': 'Modify web3 with custom contract function call.'})
     tweak_w3_contracts(web3)

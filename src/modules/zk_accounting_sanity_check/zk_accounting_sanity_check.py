@@ -13,7 +13,7 @@ from src.modules.submodules.consensus import ReportableModuleWithConsensusClient
 from src.modules.submodules.oracle_module import BaseModule, ModuleExecuteDelay
 from src.modules.zk_accounting_sanity_check.eth_consensus_layer_ssz import Balances
 from src.modules.zk_accounting_sanity_check.proof_producer import (
-    ProofProducer
+    ProofProducer, CircuitInput, PublicInput, PrivateInput
 )
 from src.modules.zk_accounting_sanity_check.typings import OracleReport, OracleProof, OracleReportData
 from src.utils.slot import get_reference_blockstamp
@@ -36,7 +36,7 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
     report_contract: Contract
     CONTRACT_VERSION = 1
 
-    def __init__(self, web3: Web3,proof_producer: ProofProducer):
+    def __init__(self, web3: Web3, proof_producer: ProofProducer):
         super().__init__(web3)
         self.w3 = web3
         self._proof_producer = proof_producer
@@ -71,7 +71,7 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
     @lru_cache(maxsize=1)
     def _get_consensus_contract_address(self, blockstamp: BlockStamp) -> ChecksumAddress:
         return self.w3.lido_contracts.accounting_oracle.functions.getConsensusContract().call(
-            block_identifier=blockstamp.block_hash
+            block_identifier=blockstamp.block_number
         )
 
     def get_blockstamp_for_report(self, last_finalized_blockstamp: BlockStamp) -> Optional[ReferenceBlockStamp]:
@@ -113,6 +113,7 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
 
         logger.info({'msg': 'Calculated blockstamp for report.', 'value': bs})
         return bs
+
     # ----- End: Implementing abstract methods -----
 
     def _calculate_report(self, blockstamp: ReferenceBlockStamp) -> OracleReport:
@@ -128,7 +129,7 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
 
         self.LOGGER.debug({"msg": f"Fetched beacon state for slot {beacon_state.slot}"})
         report = self._build_report_data(blockstamp, beacon_state, lido_withdrawal_credentials)
-        proof = self.build_proof(blockstamp, beacon_state)
+        proof = self._build_proof(blockstamp, beacon_state, lido_withdrawal_credentials, report)
 
         return OracleReport(report, proof)
 
@@ -136,7 +137,7 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
         self.LOGGER.info({'msg': 'Fetching Lido withdrawal credentials'})
         lido_withdrawal_credentials = self.w3.lido_contracts.staking_router.functions.getWithdrawalCredentials(
         ).call(
-            block_identifier=blockstamp.block_hash,
+            block_identifier=blockstamp.block_number,
         )
         self.LOGGER.debug({'msg': 'Fetch Lido withdrawal credentials.', 'value': lido_withdrawal_credentials})
         return HexBytes(lido_withdrawal_credentials)
@@ -156,12 +157,11 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
             if validator.withdrawal_credentials != withdrawal_credentials:
                 continue
 
+            balance += beacon_state.balances[idx]
             if validator.exit_epoch <= block_epoch:
                 exited += 1
             if validator.activation_eligibility_epoch <= block_epoch:
                 active += 1
-            validator_balance = beacon_state.balances[idx]
-            balance += validator_balance
 
         report = OracleReportData(
             slot=blockstamp.slot_number,
@@ -174,21 +174,43 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
         self.LOGGER.debug({"msg": f"Built oracle report", "value": report.as_dict()})
         return report
 
-    def build_proof(self, blockstamp: BlockStamp, beacon_state: BeaconState) -> OracleProof:
+    def _build_proof(
+            self, blockstamp: ReferenceBlockStamp, beacon_state: BeaconState, withdrawal_credentials: HexBytes,
+            report_data: OracleReportData
+    ) -> OracleProof:
         self.LOGGER.info({"msg": f"Building oracle ZK-proof for slot {blockstamp.slot_number}"})
-        balances_hash = Balances.get_hash_tree_root(beacon_state.balances)
+        balances_hash = HexBytes(ssz.get_hash_tree_root(beacon_state.balances))
+        validators_hash = HexBytes(ssz.get_hash_tree_root(beacon_state.validators))
+        beacon_state_hash = HexBytes(ssz.get_hash_tree_root(beacon_state))
 
-        circuit_input = [
-            {"array": list(beacon_state.balances)},
-            {"vector": ProofProducer.as_field(balances_hash)},
-            {"int": sum(beacon_state.balances)}
-        ]
-        proof = self._proof_producer.generate_proof(circuit_input)
+        circuit_input = CircuitInput(
+            PublicInput(
+                withdrawal_credentials,
+                balances_hash,
+                validators_hash,
+                beacon_state_hash,
+                HexBytes(blockstamp.block_hash),
+                blockstamp.ref_slot,
+                blockstamp.ref_epoch,
+            ),
+            PrivateInput(
+                beacon_state.validators,
+                beacon_state.balances,
+                # TODO: compute real inclusion proofs
+                [HexBytes(idx.to_bytes(32)) for idx in range(6)],
+                [HexBytes(idx.to_bytes(32)) for idx in range(6, 12)],
+                [HexBytes(idx.to_bytes(32)) for idx in range(12, 15)],
+            ),
+            report_data
+        )
+        zk_proof = self._proof_producer.generate_proof(circuit_input)
 
         proof = OracleProof(
-            # beaconBlockHash=blockstamp.block_hash,
             balances_hash=balances_hash,
-            zk_proof=HexBytes(proof)
+            validators_hash=validators_hash,
+            beacon_state_hash=beacon_state_hash,
+            beacon_block_hash=HexBytes(blockstamp.block_hash),
+            zk_proof=HexBytes(zk_proof)
         )
         self.LOGGER.debug({"msg": f"Built oracle ZK-proof", "value": proof.as_dict()})
         return proof
