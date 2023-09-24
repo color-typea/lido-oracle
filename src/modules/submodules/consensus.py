@@ -43,7 +43,6 @@ class ReportableModuleWithConsensusClient(ABC):
     report_contract: Contract
 
     CONTRACT_VERSION: int
-    CONSENSUS_VERSION: int
 
     def __init__(self, w3: Web3):
         self.w3 = w3
@@ -126,25 +125,20 @@ class ReportableModuleWithConsensusClient(ABC):
         contract_version = self.report_contract.functions.getContractVersion().call(
             block_identifier=blockstamp.block_hash
         )
-        consensus_version = self.report_contract.functions.getConsensusVersion().call(
-            block_identifier=blockstamp.block_hash
-        )
 
-        if contract_version > self.CONTRACT_VERSION or consensus_version > self.CONSENSUS_VERSION:
+        if contract_version > self.CONTRACT_VERSION:
             raise IncompatibleContractVersion(
                 f'Incompatible Oracle version. '
                 f'Expected contract version {contract_version} got {self.CONTRACT_VERSION}. '
-                f'Expected consensus version {consensus_version} got {self.CONSENSUS_VERSION}.'
             )
 
-        compatibility = contract_version == self.CONTRACT_VERSION and consensus_version == self.CONSENSUS_VERSION
+        compatibility = contract_version == self.CONTRACT_VERSION
 
         if not compatibility:
             logger.warning(
                 {
                     'msg': f'Oracle\'s version higher than contract supports. '
                            f'Expected contract version {contract_version} got {self.CONTRACT_VERSION}. '
-                           f'Expected consensus version {consensus_version} got {self.CONSENSUS_VERSION}.'
                 }
             )
 
@@ -208,6 +202,9 @@ class ConsensusModule(ReportableModuleWithConsensusClient, ABC):
 
     report_contract should contain getConsensusContract method.
     """
+
+    CONSENSUS_VERSION: int
+
     def __init__(self, w3: Web3):
         super().__init__(w3)
 
@@ -218,6 +215,7 @@ class ConsensusModule(ReportableModuleWithConsensusClient, ABC):
         consensus_contract = self._get_consensus_contract(blockstamp)
         members, last_reported_ref_slots = consensus_contract.functions.getMembers().call(block_identifier=blockstamp.block_hash)
         return members, last_reported_ref_slots
+
 
     @lru_cache(maxsize=1)
     def get_member_info(self, blockstamp: BlockStamp) -> MemberInfo:
@@ -339,6 +337,33 @@ class ConsensusModule(ReportableModuleWithConsensusClient, ABC):
         )
         logger.info({'msg': 'Calculate blockstamp for report.', 'value': bs})
         return bs
+
+    def _check_contract_versions(self, blockstamp: BlockStamp) -> bool:
+        oracle_version_compatible = super()._check_contract_versions(blockstamp)
+        if not oracle_version_compatible:
+            return False
+
+        consensus_version = self.report_contract.functions.getConsensusVersion().call(
+            block_identifier=blockstamp.block_hash
+        )
+
+        if consensus_version > self.CONSENSUS_VERSION:
+            raise IncompatibleContractVersion(
+                f'Incompatible Oracle version. '
+                f'Expected consensus version {consensus_version} got {self.CONSENSUS_VERSION}.'
+            )
+
+        compatibility = consensus_version == self.CONSENSUS_VERSION
+
+        if not compatibility:
+            logger.warning(
+                {
+                    'msg': f'Oracle\'s version higher than contract supports. '
+                           f'Expected consensus version {consensus_version} got {self.CONSENSUS_VERSION}.'
+                }
+            )
+
+        return compatibility
 
     # ----- Working with report -----
     def process_report(self, blockstamp: ReferenceBlockStamp) -> None:

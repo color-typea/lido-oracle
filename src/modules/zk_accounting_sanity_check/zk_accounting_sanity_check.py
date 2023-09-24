@@ -3,15 +3,14 @@ from functools import lru_cache
 from typing import io, Optional
 
 import ssz
-from eth_typing import ChecksumAddress
+from eth_typing import ChecksumAddress, HexStr
 from hexbytes import HexBytes
-from web3.types import TxParams, Wei
 
 from components.eth_consensus_layer_ssz import BeaconState
 from src.metrics.prometheus.duration_meter import duration_meter
 from src.modules.submodules.consensus import ReportableModuleWithConsensusClient
 from src.modules.submodules.oracle_module import BaseModule, ModuleExecuteDelay
-from src.modules.zk_accounting_sanity_check.eth_consensus_layer_ssz import Balances
+from src.modules.zk_accounting_sanity_check.eth_consensus_layer_ssz import BeaconBlockHeader
 from src.modules.zk_accounting_sanity_check.proof_producer import (
     ProofProducer, CircuitInput, PublicInput, PrivateInput
 )
@@ -19,10 +18,9 @@ from src.modules.zk_accounting_sanity_check.typings import OracleReport, OracleP
 from src.utils.slot import get_reference_blockstamp
 from src.utils.web3converter import Web3Converter
 from src.web3py.contract_tweak import Contract
-from src.web3py.extensions.beacon_state import BeaconStateClientModule
 from src.web3py.typings import Web3
 from src.metrics.logging import logging
-from src.typings import SlotNumber, BlockStamp, ReferenceBlockStamp
+from src.typings import SlotNumber, BlockStamp, ReferenceBlockStamp, StateRoot
 
 logger = logging.getLogger()
 
@@ -45,6 +43,16 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
     # ----- Implementing abstract methods -----
     def execute_module(self, last_finalized_blockstamp: BlockStamp) -> ModuleExecuteDelay:
         report_blockstamp = self.get_blockstamp_for_report(last_finalized_blockstamp)
+
+        report_blockstamp = ReferenceBlockStamp(
+            state_root=HexStr("0x569834987a8b44b4333f6b68a018db94d89d806b2dcf00ca148d5ff8d770a1fe"),
+            slot_number=6584736,
+            block_hash=HexStr("0xc0238cc1ef19fdfc6f2b8d64849b5d215f35cd88d39103a50ee904c90f3222e5"),
+            block_number=9748804,
+            block_timestamp=1695524832,
+            ref_slot=6584736,
+            ref_epoch=205773,
+        )
 
         if not report_blockstamp:
             return ModuleExecuteDelay.NEXT_FINALIZED_EPOCH
@@ -183,23 +191,30 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
         validators_hash = HexBytes(ssz.get_hash_tree_root(beacon_state.validators))
         beacon_state_hash = HexBytes(ssz.get_hash_tree_root(beacon_state))
 
+        balances_inclusion_proof = beacon_state.construct_inclusion_proof('balances', balances_hash)
+        # sanity check
+        assert beacon_state.verify_inclusion_proof('balances', balances_hash, balances_inclusion_proof)
+
+        validators_inclusion_proof = beacon_state.construct_inclusion_proof('validators', validators_hash)
+        # sanity check
+        assert beacon_state.verify_inclusion_proof('validators', validators_hash, validators_inclusion_proof)
+
         circuit_input = CircuitInput(
             PublicInput(
-                withdrawal_credentials,
-                balances_hash,
-                validators_hash,
-                beacon_state_hash,
-                HexBytes(blockstamp.block_hash),
-                blockstamp.ref_slot,
-                blockstamp.ref_epoch,
+                lido_withdrawal_credentials = withdrawal_credentials,
+                beacon_state_hash = beacon_state_hash,
+                beacon_block_hash = HexBytes(blockstamp.block_hash),
+                slot = blockstamp.ref_slot,
+                epoch = blockstamp.ref_epoch
             ),
             PrivateInput(
-                beacon_state.validators,
-                beacon_state.balances,
-                # TODO: compute real inclusion proofs
-                [HexBytes(idx.to_bytes(32)) for idx in range(6)],
-                [HexBytes(idx.to_bytes(32)) for idx in range(6, 12)],
-                [HexBytes(idx.to_bytes(32)) for idx in range(12, 15)],
+                validators = beacon_state.validators,
+                balances = beacon_state.balances,
+                balances_hash = balances_hash,
+                validators_hash = validators_hash,
+                balances_hash_inclusion_proof = balances_inclusion_proof,
+                validators_hash_inclusion_proof = validators_inclusion_proof,
+                beacon_block_fields = self._get_beacon_block_fields(blockstamp),
             ),
             report_data
         )
@@ -214,6 +229,15 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
         )
         self.LOGGER.debug({"msg": f"Built oracle ZK-proof", "value": proof.as_dict()})
         return proof
+
+    def _get_beacon_block_fields(self, blockstamp):
+        beacon_block_header_data = self.w3.cc.get_block_header(blockstamp.ref_slot).data
+        beacon_block_header = beacon_block_header_data.header.message
+
+        block_header_ssz = BeaconBlockHeader.from_api(beacon_block_header)
+        # sanity check
+        assert HexBytes(ssz.get_hash_tree_root(block_header_ssz)) == HexBytes(beacon_block_header_data.root)
+        return block_header_ssz.get_merkle_tree_leafs()
 
     def _report_already_submitted(self, blockstamp: ReferenceBlockStamp) -> bool:
         # TODO: read report from report_contract for the blockstamp.ref_slot - don't submit if already exists

@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 from enum import StrEnum
-from typing import List, Callable, TypeVar
+from typing import List, Callable, TypeVar, Iterable, Optional
 from abc import ABCMeta, abstractmethod
 
 from eth_typing import Hash32
@@ -24,15 +24,14 @@ class ProofProducerMode(StrEnum):
     PROOF_MARKET = 'proof_market'
 
 
-FieldType = (str, str)
+HashType = (str, str)
 T = TypeVar("T")
+TOut = TypeVar("TOut")
 
 
 @dataclasses.dataclass
 class PublicInput:
     lido_withdrawal_credentials: Hash32
-    expected_balances_hash: Hash32
-    expected_validators_hash: Hash32
     beacon_state_hash: Hash32
     beacon_block_hash: Hash32
     slot: SlotNumber
@@ -43,6 +42,8 @@ class PublicInput:
 class PrivateInput:
     validators: Validators
     balances: Balances
+    balances_hash: Hash32
+    validators_hash: Hash32
     balances_hash_inclusion_proof: List[HexBytes]
     validators_hash_inclusion_proof: List[HexBytes]
     beacon_block_fields: List[HexBytes]
@@ -54,50 +55,66 @@ class CircuitInput:
     private_input: PrivateInput
     report_data: OracleReportData
 
+    # this is temporary means to limit the amount of data we're sending to the prover
+    TRUNCATE_VALIDATORS = 16
+
     @classmethod
     def as_int(cls, val):
         return {"int": val}
 
     @classmethod
-    def as_array(cls, val):
-        return {"array": val}
+    def as_array(cls, val: Iterable[T], mapper: Callable[[T], TOut]):
+        return cls._iterable("array", val, mapper)
 
     @classmethod
-    def as_vector(cls, val):
-        return {"vector": val}
+    def as_vector(cls, val, mapper: Callable[[T], TOut]):
+        return cls._iterable("verctor", val, mapper)
 
     @classmethod
-    def as_field(cls, value: bytes) -> FieldType:
+    def _iterable(cls, type_label, value, mapper: Callable[[T], TOut]):
+        mapped_values = [mapper(item) for item in value]
+        return {type_label: mapped_values}
+
+    @classmethod
+    def as_hash(cls, value: bytes) -> HashType:
         low = int.from_bytes(value[:16], 'little', signed=False)
         high = int.from_bytes(value[16:], 'little', signed=False)
-        return str(low), str(high)
+        return {"vector": [{"field": str(low)}, {"field": str(high)}]}
 
-    @classmethod
-    def as_array_of_fields(cls, values: List[bytes]):
-        return {"array": [cls.as_field(value) for value in values]}
+    @property
+    def validators(self):
+        return self._truncate(self.private_input.validators, self.TRUNCATE_VALIDATORS)
 
-    def validator_field(self, extractor: Callable[[Validator], T]) -> List[T]:
+    @property
+    def balances(self):
+        return self._truncate(self.private_input.balances, self.TRUNCATE_VALIDATORS)
+
+
+    def _truncate(self, value, max_len: Optional[int] = None):
+        # this is safe, if list is shorter, or if max_len is None it will just return the whole list
+        return value[:max_len]
+
+
+    def validator_field_for_merkleization(self, extractor: Callable[[Validator], T]) -> List[T]:
+        return [extractor(validator) for validator in self.validators]
+
+
+    def serialize_for_proof_generator(self):
         return [
-            extractor(validator)
-            for validator in self.private_input.validators
-        ]
-
-    def serialize_for_proover(self):
-        return [
-            self.as_int(len(self.private_input.balances)),
-            self.as_array(self.private_input.balances),
+            self.as_int(len(self.validators)),
+            self.as_array(self.balances, self.as_int),
             # Validator parts
-            self.as_array_of_fields(self.validator_field(lambda validator: validator.pubkey)),
-            self.as_array_of_fields(self.validator_field(lambda validator: validator.withdrawal_credentials)),
-            self.as_array(self.validator_field(lambda validator: validator.effective_balance)),
-            self.as_array(self.validator_field(lambda validator: 1 if validator.slashed else 0)),
-            self.as_array(self.validator_field(lambda validator: validator.activation_eligibility_epoch)),
-            self.as_array(self.validator_field(lambda validator: validator.activation_epoch)),
-            self.as_array(self.validator_field(lambda validator: validator.exit_epoch)),
-            self.as_array(self.validator_field(lambda validator: validator.withdrawable_epoch)),
+            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.pubkey), self.as_hash),
+            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.withdrawal_credentials), self.as_hash),
+            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.effective_balance), self.as_int),
+            self.as_array(self.validator_field_for_merkleization(lambda validator: 1 if validator.slashed else 0), self.as_int),
+            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.activation_eligibility_epoch), self.as_int),
+            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.activation_epoch), self.as_int),
+            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.exit_epoch), self.as_int),
+            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.withdrawable_epoch), self.as_int),
 
             # "Configuration parameters"
-            self.as_field(self.public_input.lido_withdrawal_credentials),
+            self.as_hash(self.public_input.lido_withdrawal_credentials),
             self.as_int(self.public_input.slot),
             self.as_int(self.public_input.epoch),
 
@@ -107,15 +124,17 @@ class CircuitInput:
             self.as_int(self.report_data.exitedValidators),
 
             # Expected hashes
-            self.as_vector(self.as_field(self.public_input.expected_balances_hash)),
-            self.as_vector(self.as_field(self.public_input.expected_validators_hash)),
-            self.as_vector(self.as_field(HexBytes(self.public_input.beacon_state_hash))),
-            self.as_vector(self.as_field(HexBytes(self.public_input.beacon_block_hash))),
+            self.as_hash(self.private_input.balances_hash),
+            self.as_hash(self.private_input.validators_hash),
+            self.as_hash(HexBytes(self.public_input.beacon_state_hash)),
+            self.as_hash(HexBytes(self.public_input.beacon_block_hash)),
 
             # Inclusion proofs
-            self.as_array_of_fields(self.private_input.balances_hash_inclusion_proof),
-            self.as_array_of_fields(self.private_input.validators_hash_inclusion_proof),
-            self.as_array_of_fields(self.private_input.beacon_block_fields),
+            self.as_array(self.private_input.balances_hash_inclusion_proof, self.as_hash),
+            self.as_array(self.private_input.validators_hash_inclusion_proof, self.as_hash),
+
+            # Beacon block fields
+            self.as_array(self.private_input.beacon_block_fields, self.as_hash),
         ]
 
 
@@ -173,7 +192,7 @@ class ProofGeneratorCLIProofProducer(ProofProducer):
         public_input_file = tempfile.NamedTemporaryFile("w", prefix="public_input", delete=False)
         try:
             # json.dump(public_input, public_input_file)
-            json.dump(proof_input.serialize_for_proover(), public_input_file)
+            json.dump(proof_input.serialize_for_proof_generator(), public_input_file)
             public_input_file.close()
             args = self._gen_run_args(public_input_file.name, output_file_name)
             cmd = " ".join(args)
@@ -219,7 +238,7 @@ class ProofProducerFactory:
 
     @classmethod
     def _check_file_exists(cls, file_path):
-        return file_path and os.path.exists(variables.PROOF_FILE) and os.path.isfile(file_path)
+        return file_path and os.path.exists(file_path) and os.path.isfile(file_path)
 
     @classmethod
     def _precomputed(cls) -> (ProofProducer, Errors):

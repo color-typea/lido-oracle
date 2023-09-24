@@ -1,9 +1,11 @@
-from ssz.hashable_container import HashableContainer, SignedHashableContainer
+from hexbytes import HexBytes
+from ssz import get_hash_tree_root
+from ssz.hash import hash_eth2
+from ssz.hashable_container import HashableContainer
 from ssz.sedes import (
     Bitlist,
     Bitvector,
     ByteVector,
-    ByteList,
     List,
     Vector,
     boolean,
@@ -17,6 +19,7 @@ from ssz.sedes import (
 )
 
 from src import constants
+from src.providers.consensus.typings import BlockHeaderMessage
 
 Hash32 = bytes32
 Root = bytes32
@@ -32,44 +35,103 @@ ParticipationFlags = uint8
 Version = bytes4
 
 
-USE_SIGNED_CONTAINER_BY_DEFAULT = False
-DefaultContainerType = SignedHashableContainer if USE_SIGNED_CONTAINER_BY_DEFAULT else HashableContainer
-signature_fields = [("signature", bytes32)] if USE_SIGNED_CONTAINER_BY_DEFAULT else []
+class InclusionProofUtilsTrait:
 
-class Fork(DefaultContainerType):
+    def get_merkle_tree_leafs(self):
+        return self.hash_tree.chunks
+
+    @property
+    def _raw_hash_tree_for_inclusion(self):
+        # Last layer only has one value that is the hash tree root
+        return self.hash_tree.raw_hash_tree[:-1]
+
+    def _get_field_index(self, field_name):
+        return self._meta.field_names.index(field_name)
+
+    def construct_inclusion_proof(self, field_name, field_hash):
+        field_index = self._get_field_index(field_name)
+        raw_hash_tree = self._raw_hash_tree_for_inclusion
+
+        assert field_hash == raw_hash_tree[0][field_index],\
+            (f"Field hash does not match the expected one.\n"
+             f"Computed field index {field_index}.\n"
+             f"Expected field hash: {raw_hash_tree[0][field_index]}.\n"
+             f"Given field hash   :{field_hash}")
+
+        result = []
+        for layer in raw_hash_tree:
+            sibling_idx = field_index - 1 if field_index % 2 == 1 else field_index + 1
+            result.append(layer[sibling_idx])
+            field_index //= 2
+        return result
+
+    def verify_inclusion_proof(self, field_name, field_hash, inclusion_proof):
+        field_index = self._get_field_index(field_name)
+
+        raw_hash_tree = self._raw_hash_tree_for_inclusion
+        if len(inclusion_proof) != len(raw_hash_tree):
+            return False
+
+        current_hash = field_hash
+        for idx in range(len(inclusion_proof)):
+            inclusion_step, layer = inclusion_proof[idx], raw_hash_tree[idx]
+            assert current_hash == layer[field_index], \
+                (f"Verification failed at layer {idx}, field_index {field_index}.\n"
+                 f"Expected{layer[field_index]}, got {current_hash}")
+            if field_index % 2 == 0:
+                current_hash = hash_eth2(current_hash + inclusion_step)
+            else:
+                current_hash = hash_eth2(inclusion_step + current_hash)
+
+            field_index //= 2
+
+        return current_hash == get_hash_tree_root(self)
+
+
+class Fork(HashableContainer):
     fields = [
         ("previous_version", Version),
         ("current_version", Version),
         ("epoch", Epoch)  # Epoch of latest fork
-    ] + signature_fields
+    ]
 
 
-class Checkpoint(DefaultContainerType):
+class Checkpoint(HashableContainer):
     fields = [
         ("epoch", Epoch),
         ("root", Root)
-    ] + signature_fields
+    ]
 
 
-class BeaconBlockHeader(DefaultContainerType):
+class BeaconBlockHeader(HashableContainer, InclusionProofUtilsTrait):
     fields = [
         ("slot", Slot),
         ("proposer_index", ValidatorIndex),
         ("parent_root", Root),
         ("state_root", Root),
         ("body_root", Root),
-    ] + signature_fields
+    ]
+
+    @classmethod
+    def from_api(cls, api_response: BlockHeaderMessage) -> 'BeaconBlockHeader':
+        return cls.create(
+            slot = int(api_response.slot),
+            proposer_index = int(api_response.proposer_index),
+            parent_root = HexBytes(api_response.parent_root),
+            state_root = HexBytes(api_response.state_root),
+            body_root = HexBytes(api_response.body_root),
+        )
 
 
-class Eth1Data(DefaultContainerType):
+class Eth1Data(HashableContainer):
     fields = [
         ("deposit_root", Root),
         ("deposit_count", uint64),
         ("block_hash", Hash32),
-    ] + signature_fields
+    ]
 
 
-class Validator(DefaultContainerType):
+class Validator(HashableContainer):
     fields = [
         ("pubkey", BLSPubkey),
         ("withdrawal_credentials", bytes32),  # Commitment to pubkey for withdrawals
@@ -80,35 +142,36 @@ class Validator(DefaultContainerType):
         ("activation_epoch", Epoch),
         ("exit_epoch", Epoch),
         ("withdrawable_epoch", Epoch),  # When validator can withdraw funds
-    ] + signature_fields
+    ]
 
 
-class AttestationData(DefaultContainerType):
+class AttestationData(HashableContainer):
     fields = [
         ("slot", Slot),
         ("index", CommitteeIndex),
         ("beacon_block_root", Root),
         ("source", Checkpoint),
         ("target", Checkpoint),
-    ] + signature_fields
+    ]
 
 
-class PendingAttestation(DefaultContainerType):
+class PendingAttestation(HashableContainer):
     fields = [
         ("aggregation_bits", Bitlist(constants.MAX_VALIDATORS_PER_COMMITTEE)),
         ("data", AttestationData),
         ("inclusion_delay", Slot),
         ("proposer_index", ValidatorIndex),
-    ] + signature_fields
+    ]
 
 
-class SyncCommittee(DefaultContainerType):
+class SyncCommittee(HashableContainer):
     fields = [
         ("pubkeys", Vector(BLSPubkey, constants.SYNC_COMMITTEE_SIZE)),
         ("aggregate_pubkey", BLSPubkey),
-    ] + signature_fields
+    ]
 
-class ExecutionPayloadHeader(DefaultContainerType):
+
+class ExecutionPayloadHeader(HashableContainer):
     # Execution block header fields
     fields = [
         ("parent_hash", Hash32),
@@ -129,9 +192,10 @@ class ExecutionPayloadHeader(DefaultContainerType):
         ("transactions_root", Root),
         ("withdrawals_root", Root),
         # ("excess_data_gas: uint256", uint256),
-    ] + signature_fields
+    ]
 
-class HistoricalSummary(DefaultContainerType):
+
+class HistoricalSummary(HashableContainer):
     """
     `HistoricalSummary` matches the components of the phase0 `HistoricalBatch`
     making the two hash_tree_root-compatible.
@@ -139,13 +203,14 @@ class HistoricalSummary(DefaultContainerType):
     fields = [
         ("block_summary_root", Root),
         ("state_summary_root", Root),
-    ] + signature_fields
+    ]
 
 
 Validators = List(Validator, constants.VALIDATOR_REGISTRY_LIMIT)
 Balances = List(Gwei, constants.VALIDATOR_REGISTRY_LIMIT)
 
-class BeaconState(DefaultContainerType):
+
+class BeaconState(HashableContainer, InclusionProofUtilsTrait):
     fields = [
         # Versioning
         ("genesis_time", uint64),
@@ -156,10 +221,12 @@ class BeaconState(DefaultContainerType):
         ("latest_block_header", BeaconBlockHeader),
         ("block_roots", Vector(Root, constants.SLOTS_PER_HISTORICAL_ROOT)),
         ("state_roots", Vector(Root, constants.SLOTS_PER_HISTORICAL_ROOT)),
-        ("historical_roots", List(Root, constants.HISTORICAL_ROOTS_LIMIT)),  # Frozen in Capella, replaced by historical_summaries
+        ("historical_roots", List(Root, constants.HISTORICAL_ROOTS_LIMIT)),
+        # Frozen in Capella, replaced by historical_summaries
         # Eth1
         ("eth1_data", Eth1Data),
-        ("eth1_data_votes", List(Eth1Data, constants.EPOCHS_PER_ETH1_VOTING_PERIOD * constants.SLOTS_PER_EPOCH)),
+        ("eth1_data_votes",
+         List(Eth1Data, constants.EPOCHS_PER_ETH1_VOTING_PERIOD * constants.SLOTS_PER_EPOCH)),
         ("eth1_deposit_index", uint64),
         # Registry
         ("validators", Validators),
@@ -167,12 +234,14 @@ class BeaconState(DefaultContainerType):
         # Randomness
         ("randao_mixes", Vector(bytes32, constants.EPOCHS_PER_HISTORICAL_VECTOR)),
         # Slashings
-        ("slashings", Vector(Gwei, constants.EPOCHS_PER_SLASHINGS_VECTOR)),   # Per-epoch sums of slashed effective balances
+        ("slashings", Vector(Gwei, constants.EPOCHS_PER_SLASHINGS_VECTOR)),
+        # Per-epoch sums of slashed effective balances
         # Participation
         ("previous_epoch_participation", List(ParticipationFlags, constants.VALIDATOR_REGISTRY_LIMIT)),
         ("current_epoch_participation", List(ParticipationFlags, constants.VALIDATOR_REGISTRY_LIMIT)),
         # Finality
-        ("justification_bits", Bitvector(constants.JUSTIFICATION_BITS_LENGTH)), # Bit set for every recent justified epoch
+        ("justification_bits", Bitvector(constants.JUSTIFICATION_BITS_LENGTH)),
+        # Bit set for every recent justified epoch
         ("previous_justified_checkpoint", Checkpoint),
         ("current_justified_checkpoint", Checkpoint),
         ("finalized_checkpoint", Checkpoint),
@@ -182,10 +251,11 @@ class BeaconState(DefaultContainerType):
         ("current_sync_committee", SyncCommittee),
         ("next_sync_committee", SyncCommittee),
         # Execution
-        ("latest_execution_payload_header", ExecutionPayloadHeader), # (Modified in Capella)
+        ("latest_execution_payload_header", ExecutionPayloadHeader),  # (Modified in Capella)
         # Withdrawals
-        ("next_withdrawal_index", WithdrawalIndex),   # (New in Capella)
-        ("next_withdrawal_validator_index", ValidatorIndex),   # (New in Capella)
+        ("next_withdrawal_index", WithdrawalIndex),  # (New in Capella)
+        ("next_withdrawal_validator_index", ValidatorIndex),  # (New in Capella)
         # Deep history valid from Capella onwards
-        ("historical_summaries", List(HistoricalSummary, constants.HISTORICAL_ROOTS_LIMIT)),   # (New in Capella)
-    ] + signature_fields
+        ("historical_summaries", List(HistoricalSummary, constants.HISTORICAL_ROOTS_LIMIT)),
+        # (New in Capella)
+    ]

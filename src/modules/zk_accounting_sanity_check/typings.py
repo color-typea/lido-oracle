@@ -1,9 +1,8 @@
 import dataclasses
 
-from eth_typing import HexStr
 from hexbytes import HexBytes
 
-from src.typings import BlockHash, SlotNumber, EpochNumber
+from src.typings import SlotNumber, EpochNumber
 
 
 class DataclassConvenience:
