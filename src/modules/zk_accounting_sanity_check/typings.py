@@ -36,28 +36,25 @@ class OracleReportData(DataclassConvenience):
 
 @dataclasses.dataclass
 class OracleProof(DataclassConvenience):
-    balances_hash: HexBytes
-    validators_hash: HexBytes
-    beacon_state_hash: HexBytes
-    beacon_block_hash: HexBytes
+    a: int
+    b: int
+    sum: int
     zk_proof: HexBytes
 
     def as_tuple(self):
         return (
-            self.balances_hash,
-            self.validators_hash,
-            self.beacon_state_hash,
-            self.beacon_block_hash,
+            self.a,
+            self.b,
+            self.sum,
             self.zk_proof,
         )
 
     def as_dict_for_logging(self):
         as_dict = dataclasses.asdict(self)
         as_dict['zk_proof'] = as_dict['zk_proof'].hex()
-        as_dict['balances_hash'] = as_dict['balances_hash'].hex()
-        as_dict['validators_hash'] = as_dict['validators_hash'].hex()
-        as_dict['beacon_state_hash'] = as_dict['beacon_state_hash'].hex()
-        as_dict['beacon_block_hash'] = as_dict['beacon_block_hash'].hex()
+        as_dict['a'] = as_dict['a'].hex()
+        as_dict['b'] = as_dict['b'].hex()
+        as_dict['sum'] = as_dict['sum'].hex()
 
         del as_dict['zk_proof']
         # as_dict['zk_proof'] = as_dict['zk_proof'][:20] + b'\x01020304' + as_dict['zk_proof'][:-20]

@@ -39,29 +39,19 @@ TOut = TypeVar("TOut")
 
 @dataclasses.dataclass
 class PublicInput:
-    lido_withdrawal_credentials: Hash32
-    beacon_state_hash: Hash32
-    beacon_block_hash: Hash32
-    slot: SlotNumber
-    epoch: EpochNumber
+    sum: int
 
 
 @dataclasses.dataclass
 class PrivateInput:
-    validators: Validators
-    balances: Balances
-    balances_hash: Hash32
-    validators_hash: Hash32
-    balances_hash_inclusion_proof: List[HexBytes]
-    validators_hash_inclusion_proof: List[HexBytes]
-    beacon_block_fields: List[HexBytes]
+    a: int
+    b: int
 
 
 @dataclasses.dataclass
 class CircuitInput:
     public_input: PublicInput
     private_input: PrivateInput
-    report_data: OracleReportData
 
     # this is temporary means to limit the amount of data we're sending to the prover
     TRUNCATE_VALIDATORS = 16
@@ -90,76 +80,18 @@ class CircuitInput:
         high = int.from_bytes(value[16:], 'little', signed=False)
         return {"vector": [{"field": str(low)}, {"field": str(high)}]}
 
-    @property
-    def validators(self):
-        return self._truncate(self.private_input.validators, self.TRUNCATE_VALIDATORS)
-
-    @property
-    def balances(self):
-        return self._truncate(self.private_input.balances, self.TRUNCATE_VALIDATORS)
-
     def _truncate(self, value, max_len: Optional[int] = None):
         # this is safe, if list is shorter, or if max_len is None it will just return the whole list
         return value[:max_len]
-
-    def validator_field_for_merkleization(self, extractor: Callable[[Validator], T]) -> List[T]:
-        return [extractor(validator) for validator in self.validators]
 
     def merkelize_pubkey(self, value):
         return ssz.get_hash_tree_root(value)
 
     def serialize_for_proof_generator(self):
         return [
-            self.as_int(len(self.validators)),
-            self.as_array(self.balances, self.as_int),
-            # Validator parts
-            self.as_array(
-                self.validator_field_for_merkleization(lambda validator: hash_eth2(validator.pubkey + b'\x00' * 16)),
-                self.as_hash
-            ),
-            self.as_array(
-                self.validator_field_for_merkleization(lambda validator: validator.withdrawal_credentials), self.as_hash
-            ),
-            self.as_array(
-                self.validator_field_for_merkleization(lambda validator: validator.effective_balance), self.as_int
-            ),
-            self.as_array(
-                self.validator_field_for_merkleization(lambda validator: 1 if validator.slashed else 0), self.as_int
-            ),
-            self.as_array(
-                self.validator_field_for_merkleization(lambda validator: validator.activation_eligibility_epoch),
-                self.as_int
-            ),
-            self.as_array(
-                self.validator_field_for_merkleization(lambda validator: validator.activation_epoch), self.as_int
-            ),
-            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.exit_epoch), self.as_int),
-            self.as_array(
-                self.validator_field_for_merkleization(lambda validator: validator.withdrawable_epoch), self.as_int
-            ),
-
-            # "Configuration parameters"
-            self.as_hash(self.public_input.lido_withdrawal_credentials),
-            self.as_int(self.public_input.slot),
-            self.as_int(self.public_input.epoch),
-
-            # Report values
-            self.as_int(self.report_data.totalValueLocked),
-            self.as_int(self.report_data.allLidoValidators),
-            self.as_int(self.report_data.exitedValidators),
-
-            # Expected hashes
-            self.as_hash(self.private_input.balances_hash),
-            self.as_hash(self.private_input.validators_hash),
-            self.as_hash(HexBytes(self.public_input.beacon_state_hash)),
-            self.as_hash(HexBytes(self.public_input.beacon_block_hash)),
-
-            # Inclusion proofs
-            self.as_array(self.private_input.balances_hash_inclusion_proof, self.as_hash),
-            self.as_array(self.private_input.validators_hash_inclusion_proof, self.as_hash),
-
-            # Beacon block fields
-            self.as_array(self.private_input.beacon_block_fields, self.as_hash),
+            self.as_int(self.private_input.a),
+            self.as_int(self.private_input.b),
+            self.as_int(self.public_input.sum),
         ]
 
 
