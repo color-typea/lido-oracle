@@ -98,6 +98,14 @@ KEYS_API_LATEST_BLOCKNUMBER = Gauge(
     namespace=PROMETHEUS_PREFIX,
 )
 
+PROOF_MARKET_REQUESTS_DURATION = Histogram(
+    'proof_market_requests_duration',
+    'Duration of requests to CL API',
+    ['endpoint', 'code', 'domain'],
+    namespace=PROMETHEUS_PREFIX,
+    buckets=requests_buckets,
+)
+
 TRANSACTIONS_COUNT = Counter(
     'transactions_count',
     'Total count of transactions. Success or failure',

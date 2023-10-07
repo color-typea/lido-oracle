@@ -1,3 +1,4 @@
+import functools
 import logging
 from abc import ABC
 from http import HTTPStatus
@@ -5,12 +6,11 @@ from typing import Optional, Tuple, Sequence, Callable
 from urllib.parse import urljoin, urlparse
 
 from prometheus_client import Histogram
-from requests import Session, JSONDecodeError
+from requests import Session, JSONDecodeError, Response
 from requests.adapters import HTTPAdapter
 from urllib3 import Retry
 
 from src.providers.consistency import ProviderConsistencyModule
-
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +37,11 @@ class HTTPProvider(ProviderConsistencyModule, ABC):
     request_timeout: int
 
     def __init__(
-        self,
-        hosts: list[str],
-        request_timeout: int,
-        retry_total: int,
-        retry_backoff_factor: int,
+            self,
+            hosts: list[str],
+            request_timeout: int,
+            retry_total: int,
+            retry_backoff_factor: int,
     ):
         if not hosts:
             raise NoHostsProvided(f"No hosts provided for {self.__class__.__name__}")
@@ -69,11 +69,11 @@ class HTTPProvider(ProviderConsistencyModule, ABC):
         return urljoin(host, url)
 
     def _get(
-        self,
-        endpoint: str,
-        path_params: Optional[Sequence[str | int]] = None,
-        query_params: Optional[dict] = None,
-        force_raise: Callable[..., Exception | None] = lambda _: None,
+            self,
+            endpoint: str,
+            path_params: Optional[Sequence[str | int]] = None,
+            query_params: Optional[dict] = None,
+            force_raise: Callable[..., Exception | None] = lambda _: None,
     ) -> Tuple[dict | list, dict]:
         """
         Get request with fallbacks
@@ -82,11 +82,41 @@ class HTTPProvider(ProviderConsistencyModule, ABC):
         force_raise - function that returns an Exception if it should be thrown immediately.
         Sometimes NotOk response from first provider is the response that we are expecting.
         """
+        return self._execute_with_fallbacks(
+            lambda host: self._get_without_fallbacks(host, endpoint, path_params, query_params),
+            force_raise
+        )
+
+    def _post(
+        self,
+        endpoint: str,
+        path_params: Optional[Sequence[str | int]] = None,
+        query_params: Optional[dict] = None,
+        body: Optional[dict] = None,
+        json: Optional[dict] = None,
+        force_raise: Callable[..., Exception | None] = lambda _: None,
+    ) -> Tuple[dict | list, dict]:
+        """
+        Post request with fallbacks
+        Returns (data, meta) or raises exception
+
+        force_raise - function that returns an Exception if it should be thrown immediately.
+        Sometimes NotOk response from first provider is the response that we are expecting.
+        """
+        return self._execute_with_fallbacks(
+            lambda host: self._post_without_fallbacks(host, endpoint, path_params, query_params, body, json),
+            force_raise
+        )
+
+    def _execute_with_fallbacks(self,
+        func: Callable[[str], Tuple[dict | list, dict]],
+        force_raise: Callable[..., Exception | None] = lambda _: None,
+    ):
         errors: list[Exception] = []
 
         for host in self.hosts:
             try:
-                return self._get_without_fallbacks(host, endpoint, path_params, query_params)
+                return func(host)
             except Exception as e:  # pylint: disable=W0703
                 errors.append(e)
 
@@ -118,13 +148,47 @@ class HTTPProvider(ProviderConsistencyModule, ABC):
         """
         complete_endpoint = endpoint.format(*path_params) if path_params else endpoint
 
-        with self.PROMETHEUS_HISTOGRAM.time() as t:
-            try:
-                response = self.session.get(
+        return self._execute_request(
+            host, endpoint, complete_endpoint,
+            lambda: self.session.get(
+                self._urljoin(host, complete_endpoint if path_params else endpoint),
+                params=query_params,
+                timeout=self.request_timeout,
+            )
+        )
+
+    def _post_without_fallbacks(
+        self,
+        host: str,
+        endpoint: str,
+        path_params: Optional[Sequence[str | int]] = None,
+        query_params: Optional[dict] = None,
+        body: Optional[dict] = None,
+        json: Optional[dict] = None,
+    ) -> Tuple[dict | list, dict]:
+        """
+        Simple Post request without fallbacks
+        Returns (data, meta) or raises exception
+        """
+        complete_endpoint = endpoint.format(*path_params) if path_params else endpoint
+
+        return self._execute_request(
+            host, endpoint, complete_endpoint,
+            lambda: self.session.post(
                     self._urljoin(host, complete_endpoint if path_params else endpoint),
+                    data=body,
+                    json=json,
                     params=query_params,
                     timeout=self.request_timeout,
                 )
+        )
+
+    def _execute_request(self,
+        host, endpoint, complete_endpoint, request: Callable[[], Response]
+    ) -> Tuple[dict | list, dict]:
+        with self.PROMETHEUS_HISTOGRAM.time() as t:
+            try:
+                response = request()
             except Exception as error:
                 logger.error({'msg': str(error)})
                 t.labels(
@@ -140,7 +204,8 @@ class HTTPProvider(ProviderConsistencyModule, ABC):
                 domain=urlparse(host).netloc,
             )
 
-            response_fail_msg = f'Response from {complete_endpoint} [{response.status_code}] with text: "{str(response.text)}" returned.'
+            response_fail_msg = (f'Response from {complete_endpoint} [{response.status_code}] with text: "'
+                                 f'{str(response.text)}" returned.')
 
             if response.status_code != HTTPStatus.OK:
                 logger.debug({'msg': response_fail_msg})

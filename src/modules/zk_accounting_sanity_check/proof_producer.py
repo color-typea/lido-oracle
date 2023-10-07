@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from enum import StrEnum
 from typing import List, Callable, TypeVar, Iterable, Optional
 from abc import ABCMeta, abstractmethod
@@ -17,6 +18,11 @@ from ssz.hash import hash_eth2
 from src import variables
 from src.modules.zk_accounting_sanity_check.eth_consensus_layer_ssz import Validators, Balances, Validator
 from src.modules.zk_accounting_sanity_check.typings import OracleReportData
+from src.providers.nil_proof_market.client import ProofMarketAPI
+from src.providers.nil_proof_market.typings import (
+    RequestKey, RequestStatus, ProofMarketRequest, StatementKey,
+    ProofResponse, ProofKey
+)
 from src.typings import EpochNumber, SlotNumber
 
 
@@ -92,11 +98,9 @@ class CircuitInput:
     def balances(self):
         return self._truncate(self.private_input.balances, self.TRUNCATE_VALIDATORS)
 
-
     def _truncate(self, value, max_len: Optional[int] = None):
         # this is safe, if list is shorter, or if max_len is None it will just return the whole list
         return value[:max_len]
-
 
     def validator_field_for_merkleization(self, extractor: Callable[[Validator], T]) -> List[T]:
         return [extractor(validator) for validator in self.validators]
@@ -109,14 +113,30 @@ class CircuitInput:
             self.as_int(len(self.validators)),
             self.as_array(self.balances, self.as_int),
             # Validator parts
-            self.as_array(self.validator_field_for_merkleization(lambda validator: hash_eth2(validator.pubkey+b'\x00'*16)), self.as_hash),
-            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.withdrawal_credentials), self.as_hash),
-            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.effective_balance), self.as_int),
-            self.as_array(self.validator_field_for_merkleization(lambda validator: 1 if validator.slashed else 0), self.as_int),
-            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.activation_eligibility_epoch), self.as_int),
-            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.activation_epoch), self.as_int),
+            self.as_array(
+                self.validator_field_for_merkleization(lambda validator: hash_eth2(validator.pubkey + b'\x00' * 16)),
+                self.as_hash
+            ),
+            self.as_array(
+                self.validator_field_for_merkleization(lambda validator: validator.withdrawal_credentials), self.as_hash
+            ),
+            self.as_array(
+                self.validator_field_for_merkleization(lambda validator: validator.effective_balance), self.as_int
+            ),
+            self.as_array(
+                self.validator_field_for_merkleization(lambda validator: 1 if validator.slashed else 0), self.as_int
+            ),
+            self.as_array(
+                self.validator_field_for_merkleization(lambda validator: validator.activation_eligibility_epoch),
+                self.as_int
+            ),
+            self.as_array(
+                self.validator_field_for_merkleization(lambda validator: validator.activation_epoch), self.as_int
+            ),
             self.as_array(self.validator_field_for_merkleization(lambda validator: validator.exit_epoch), self.as_int),
-            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.withdrawable_epoch), self.as_int),
+            self.as_array(
+                self.validator_field_for_merkleization(lambda validator: validator.withdrawable_epoch), self.as_int
+            ),
 
             # "Configuration parameters"
             self.as_hash(self.public_input.lido_withdrawal_credentials),
@@ -147,6 +167,9 @@ class ProofProducer(metaclass=ABCMeta):
     @abstractmethod
     def generate_proof(self, circuit_input: CircuitInput) -> bytes:
         pass
+
+    def _proof_from_hex_str(self, proof_hex: str) -> bytes:
+        return bytes.fromhex(proof_hex[2:])
 
 
 class PrecomputedProofProducer(ProofProducer):
@@ -209,13 +232,92 @@ class ProofGeneratorCLIProofProducer(ProofProducer):
             os.remove(public_input_file.name)
 
         with open(output_file_name, "r") as proof_bin_hex:
-            proof_hex = proof_bin_hex.read()
-            proof = bytes.fromhex(proof_hex[2:])
+            proof = self._proof_from_hex_str(proof_bin_hex.read())
 
         return proof
 
 
 Errors = list[str]
+
+
+@dataclasses.dataclass
+class ProofRequestParameters:
+    statement_key: StatementKey
+    cost: float
+
+
+@dataclasses.dataclass
+class ProofMarketPollingParameters:
+    poll_interval: int
+    poll_timeout: int
+
+
+class ProofMarketProofProducer(ProofProducer):
+    LOGGER = logging.getLogger(__name__ + ".ProofMarketProofProducer")
+
+    def __init__(
+            self,
+            proof_market_api: ProofMarketAPI,
+            request_params: ProofRequestParameters,
+            polling_param: ProofMarketPollingParameters
+    ):
+        self._proof_market_api = proof_market_api
+        self.request_params = request_params
+        self.polling_param = polling_param
+
+    def proof_cost(self):
+        return variables.PROOF_COST
+
+    def generate_proof(self, circuit_input: CircuitInput) -> bytes:
+        request_submission = self._submit_proof_request(circuit_input)
+        proof_response = self._poll_for_proof(request_submission.key)
+        return self._proof_from_hex_str(proof_response.proof)
+
+    def _load_proof(self, request_key: RequestKey, proof_key: ProofKey) -> ProofResponse:
+        self.LOGGER.info({"msg": f"Loading proof; request_key={request_key}, proof_key={proof_key}"})
+        return self._proof_market_api.get_proof(proof_key)
+
+    def _poll_for_proof(self, request_key: RequestKey) -> ProofResponse:
+        start_time = time.time()
+        self.LOGGER.info({"msg": f"Starting polling proof market for key={request_key}"})
+        while True:
+            elapsed = time.time() - start_time
+            self.LOGGER.debug({"msg": f"t={elapsed:.2f}s; Polling proof market for key={request_key}."})
+            request = self._proof_market_api.get_request(request_key)
+            elapsed = time.time() - start_time
+            self.LOGGER.info({"msg": f"t={elapsed:.2f}s; Request(key={request.key}) status -{request.status}"})
+
+            if request.status == RequestStatus.COMPLETED:
+                try:
+                    self.LOGGER.info({"msg": f"Loading proof; request_key={request.key}, proof_key={request.proof_key}"})
+                    return self._load_proof(proof_key=request.proof_key)
+                except Exception as e:
+                    elapsed = time.time() - start_time
+                    self.LOGGER.warning(
+                        {"msg": f"t={elapsed:.2f}s; Failed to load proof - will continue the wait loop\n{e}"}
+                    )
+
+            next_sleep = min(self.polling_param.poll_interval * 1.0, self.polling_param.poll_timeout - elapsed)
+            if next_sleep <= 0:
+                raise TimeoutError(f"Request was not fulfilled in {self.polling_param.poll_timeout}s")
+            self.LOGGER.debug({"msg": f"Sleeping for {next_sleep:.2f}s"})
+            time.sleep(next_sleep)
+
+    def _submit_proof_request(self, circuit_input: CircuitInput) -> ProofMarketRequest:
+        self.LOGGER.info(
+            {"msg": f"Requesting poof for statement {self.request_params.statement_key} with cost {self.request_params.cost}"}
+        )
+        payload = circuit_input.serialize_for_proof_generator()
+        self.LOGGER.debug(
+            {"msg": "Request payload", "value": payload }
+        )
+        request = self._proof_market_api.submit_request(
+            self.request_params.statement_key,
+            payload,
+            self.request_params.cost
+        )
+        self.LOGGER.info({"msg": f"Submitted request: key={request.key}"})
+        return request
 
 
 class ProofProducerFactory:
@@ -266,4 +368,26 @@ class ProofProducerFactory:
 
     @classmethod
     def _proof_market(cls) -> (ProofProducer, Errors):
-        raise NotImplementedError("ZKLLVM Proof market integration is not yet implemented")
+        errors = []
+        if not variables.PROOF_MARKET_URL:
+            errors.append(f"PROOF_MARKET_URL is not set")
+
+        if errors:
+            return None, errors
+
+        proof_market_api = ProofMarketAPI(
+            variables.PROOF_MARKET_URL,
+            variables.HTTP_REQUEST_TIMEOUT_EXECUTION,
+            variables.HTTP_REQUEST_RETRY_COUNT_CONSENSUS,
+            variables.HTTP_REQUEST_SLEEP_BEFORE_RETRY_IN_SECONDS_CONSENSUS
+        )
+        request_params = ProofRequestParameters(
+            variables.PROOF_MARKET_CIRCUIT_STATEMENT_KEY,
+            variables.PROOF_COST
+        )
+        polling_param = ProofMarketPollingParameters(
+            variables.PROOF_MARKET_POLLING_PERIOD,
+            variables.PROOF_MARKET_PROOF_GENERATION_TIMEOUT
+        )
+
+        return ProofMarketProofProducer(proof_market_api, request_params, polling_param)
