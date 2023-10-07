@@ -290,7 +290,7 @@ class ProofMarketProofProducer(ProofProducer):
             if request.status == RequestStatus.COMPLETED:
                 try:
                     self.LOGGER.info({"msg": f"Loading proof; request_key={request.key}, proof_key={request.proof_key}"})
-                    return self._load_proof(proof_key=request.proof_key)
+                    return self._load_proof(request_key=request.key, proof_key=request.proof_key)
                 except Exception as e:
                     elapsed = time.time() - start_time
                     self.LOGGER.warning(
@@ -371,6 +371,12 @@ class ProofProducerFactory:
         errors = []
         if not variables.PROOF_MARKET_URL:
             errors.append(f"PROOF_MARKET_URL is not set")
+        if not variables.PROOF_MARKET_CIRCUIT_STATEMENT_KEY:
+            errors.append(f"PROOF_MARKET_CIRCUIT_STATEMENT_KEY is not set")
+        if not variables.PROOF_COST:
+            errors.append(f"PROOF_MARKET_URL is not set")
+        if not variables.PROOF_COST:
+            errors.append(f"PROOF_MARKET_URL is not set")
 
         if errors:
             return None, errors
@@ -390,4 +396,4 @@ class ProofProducerFactory:
             variables.PROOF_MARKET_PROOF_GENERATION_TIMEOUT
         )
 
-        return ProofMarketProofProducer(proof_market_api, request_params, polling_param)
+        return ProofMarketProofProducer(proof_market_api, request_params, polling_param), None

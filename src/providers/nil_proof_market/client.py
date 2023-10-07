@@ -44,7 +44,7 @@ class ProofMarketAPI(HTTPProvider):
         """"""
         payload = {
             "statement_key": statement_key,
-            "input": json.dumps(payload),
+            "input": payload,
             "cost": cost,
         }
         data, _ = self._post(self.REQUEST.format(request_key=""), json=payload)

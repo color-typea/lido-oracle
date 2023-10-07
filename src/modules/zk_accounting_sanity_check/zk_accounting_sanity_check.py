@@ -67,7 +67,7 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
     @duration_meter()
     def build_report(self, blockstamp: ReferenceBlockStamp) -> tuple:
         report_data = self._calculate_report(blockstamp)
-        logger.info({'msg': 'Calculate report for accounting module.', 'value': report_data})
+        logger.info({'msg': 'Calculate report for zk accounting sanity check module.', 'value': report_data})
         return report_data.as_tuple()
 
     def is_reporting_allowed(self, blockstamp: ReferenceBlockStamp) -> bool:
@@ -238,6 +238,12 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
         # sanity check
         assert HexBytes(ssz.get_hash_tree_root(block_header_ssz)) == HexBytes(beacon_block_header_data.root)
         return block_header_ssz.get_merkle_tree_leafs()
+
+    def _submit_report(self, report: tuple, contract_version: int):
+        (report, proof) = report
+        tx = self.report_contract.functions.submitReportData(report, proof, contract_version)
+
+        self.w3.transaction.check_and_send_transaction(tx, variables.ACCOUNT)
 
     def _report_already_submitted(self, blockstamp: ReferenceBlockStamp) -> bool:
         # TODO: read report from report_contract for the blockstamp.ref_slot - don't submit if already exists

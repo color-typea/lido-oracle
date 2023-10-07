@@ -69,3 +69,6 @@ class OracleProof(DataclassConvenience):
 class OracleReport(DataclassConvenience):
     data: OracleReportData
     proof: OracleProof
+
+    def as_tuple(self):
+        return (self.data.as_tuple(), self.proof.as_tuple())
