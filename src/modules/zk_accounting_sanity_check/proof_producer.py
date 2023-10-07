@@ -9,8 +9,10 @@ from enum import StrEnum
 from typing import List, Callable, TypeVar, Iterable, Optional
 from abc import ABCMeta, abstractmethod
 
+import ssz.utils
 from eth_typing import Hash32
 from hexbytes import HexBytes
+from ssz.hash import hash_eth2
 
 from src import variables
 from src.modules.zk_accounting_sanity_check.eth_consensus_layer_ssz import Validators, Balances, Validator
@@ -77,6 +79,7 @@ class CircuitInput:
 
     @classmethod
     def as_hash(cls, value: bytes) -> HashType:
+        assert len(value) <= 32, f"Serializing as hash only support values shorter than 32 bytes, {len(value)} given"
         low = int.from_bytes(value[:16], 'little', signed=False)
         high = int.from_bytes(value[16:], 'little', signed=False)
         return {"vector": [{"field": str(low)}, {"field": str(high)}]}
@@ -98,13 +101,15 @@ class CircuitInput:
     def validator_field_for_merkleization(self, extractor: Callable[[Validator], T]) -> List[T]:
         return [extractor(validator) for validator in self.validators]
 
+    def merkelize_pubkey(self, value):
+        return ssz.get_hash_tree_root(value)
 
     def serialize_for_proof_generator(self):
         return [
             self.as_int(len(self.validators)),
             self.as_array(self.balances, self.as_int),
             # Validator parts
-            self.as_array(self.validator_field_for_merkleization(lambda validator: validator.pubkey), self.as_hash),
+            self.as_array(self.validator_field_for_merkleization(lambda validator: hash_eth2(validator.pubkey+b'\x00'*16)), self.as_hash),
             self.as_array(self.validator_field_for_merkleization(lambda validator: validator.withdrawal_credentials), self.as_hash),
             self.as_array(self.validator_field_for_merkleization(lambda validator: validator.effective_balance), self.as_int),
             self.as_array(self.validator_field_for_merkleization(lambda validator: 1 if validator.slashed else 0), self.as_int),
