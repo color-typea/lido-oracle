@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Optional, cast
 
@@ -40,20 +41,32 @@ class ProofMarketAPI(HTTPProvider):
         data, _ = self._post(self.AUTH, json=body)
         self.session.headers["Authorization"] = f'Bearer {data["jwt"]}'
 
-    def submit_request(self, statement_key: StatementKey, payload: list[dict[str, any]], cost: float) -> ProofMarketRequest:
+    def submit_request(self, statement_key: StatementKey, payload: list[dict[str, any]], cost: float, subkey:str = None) -> ProofMarketRequest:
         """"""
         payload = {
             "statement_key": statement_key,
             "input": payload,
             "cost": cost,
         }
+        if subkey is not None:
+            payload["statement_subkey"] = subkey
         data, _ = self._post(self.REQUEST.format(request_key=""), json=payload)
         return ProofMarketRequest.from_response(**cast(dict, data))
+
+    async def submit_request_async(
+            self, statement_key: StatementKey, payload: list[dict[str, any]], cost: float, subkey: str = None
+    ) -> ProofMarketRequest:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.submit_request, statement_key, payload, cost, subkey)
 
     def get_request(self, request_key: RequestKey) -> ProofMarketRequest:
         """"""
         data, _ = self._get(self.REQUEST.format(request_key=request_key))
         return ProofMarketRequest.from_response(**cast(dict, data))
+
+    async def get_request_async(self, request_key: RequestKey) -> ProofMarketRequest:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.get_request, request_key)
 
     def _read_proof_key(self, request_key: RequestKey) -> Optional[ProofKey]:
         request = self.get_request(request_key)
@@ -61,6 +74,10 @@ class ProofMarketAPI(HTTPProvider):
     def get_proof(self, proof_key: ProofKey) -> ProofResponse:
         data, _ = self._get(self.PROOF.format(proof_key=proof_key), query_params={'full': 'true'})
         return ProofResponse.from_response(**cast(dict, data))
+
+    async def get_proof_async(self, proof_key: ProofKey) -> ProofResponse:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.get_proof, proof_key)
 
 
 # Quick self-check

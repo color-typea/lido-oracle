@@ -1,14 +1,17 @@
+import asyncio
 import dataclasses
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
 import tempfile
 import time
 from enum import StrEnum
-from typing import List, Callable, TypeVar, Iterable, Optional
-from abc import ABCMeta, abstractmethod
+from functools import cached_property
+from typing import List, Callable, TypeVar, Iterable, Optional, Any
+from abc import ABCMeta, abstractmethod, ABC
 
 import ssz.utils
 from eth_typing import Hash32
@@ -21,7 +24,7 @@ from src.modules.zk_accounting_sanity_check.typings import OracleReportData
 from src.providers.nil_proof_market.client import ProofMarketAPI
 from src.providers.nil_proof_market.typings import (
     RequestKey, RequestStatus, ProofMarketRequest, StatementKey,
-    ProofResponse, ProofKey
+    ProofResponse
 )
 from src.typings import EpochNumber, SlotNumber
 
@@ -30,6 +33,7 @@ class ProofProducerMode(StrEnum):
     PRECOMPUTED = 'precomputed'
     COMMANDLINE = 'commandline'
     PROOF_MARKET = 'proof_market'
+    PROOF_MARKET_RECURSIVE = 'proof_market_recursive'
 
 
 HashType = (str, str)
@@ -57,15 +61,7 @@ class PrivateInput:
     beacon_block_fields: List[HexBytes]
 
 
-@dataclasses.dataclass
-class CircuitInput:
-    public_input: PublicInput
-    private_input: PrivateInput
-    report_data: OracleReportData
-
-    # this is temporary means to limit the amount of data we're sending to the prover
-    TRUNCATE_VALIDATORS = 16
-
+class InputBase(ABC):
     @classmethod
     def as_int(cls, val):
         return {"int": val}
@@ -84,11 +80,61 @@ class CircuitInput:
         return {type_label: mapped_values}
 
     @classmethod
-    def as_hash(cls, value: bytes) -> HashType:
-        assert len(value) <= 32, f"Serializing as hash only support values shorter than 32 bytes, {len(value)} given"
+    def as_field(cls, value: bytes) -> HashType:
+        assert len(value) <= 16, f"Serializing as field only support values shorter than 16 bytes, {len(value)} given"
         low = int.from_bytes(value[:16], 'little', signed=False)
         high = int.from_bytes(value[16:], 'little', signed=False)
-        return {"vector": [{"field": str(low)}, {"field": str(high)}]}
+        return {"field": str(high)}
+
+    @classmethod
+    def as_hash(cls, value: bytes) -> HashType:
+        assert len(value) <= 32, f"Serializing as hash only support values shorter than 32 bytes, {len(value)} given"
+        return {"vector": [cls.as_field(value[:16]), cls.as_field(value[16:])]}
+
+    @classmethod
+    def as_struct(clscls, value: T, mapper: Callable[[T], List[Any]]):
+        return {"struct": [mapper(value)]}
+
+    @abstractmethod
+    def serialize_for_proof_generator(self):
+        pass
+
+
+class MergeCircuitInput(InputBase):
+    def __init__(self, left: HexBytes, right: HexBytes):
+        self._left = left
+        self._right = right
+
+    def _slice_bytes_into_field_chunks(self, value: HexBytes):
+        field_size_in_bytes = 16
+        chunks_count = math.ceil(len(value) // field_size_in_bytes)
+        chunks = [
+            value[idx:idx + field_size_in_bytes]
+            for idx in range(chunks_count)
+        ]
+        last_chunk = chunks[-1]
+        padding = field_size_in_bytes - len(last_chunk)
+        if padding > 0:
+            chunks[-1] = chunks[-1] + b'\x00' * padding
+
+        return chunks
+
+    def serialize_for_proof_generator(self):
+        # TODO: serialize for merge circuit - this is a guess
+        return [
+            self.as_array(self._slice_bytes_into_field_chunks(self._left), self.as_field),
+            self.as_array(self._slice_bytes_into_field_chunks(self._right), self.as_field)
+        ]
+
+
+@dataclasses.dataclass
+class CircuitInput(InputBase):
+    public_input: PublicInput
+    private_input: PrivateInput
+    report_data: OracleReportData
+
+    # this is temporary means to limit the amount of data we're sending to the prover
+    TRUNCATE_VALIDATORS = 16
 
     @property
     def validators(self):
@@ -237,12 +283,17 @@ class ProofGeneratorCLIProofProducer(ProofProducer):
         return proof
 
 
-Errors = list[str]
-
-
 @dataclasses.dataclass
 class ProofRequestParameters:
     statement_key: StatementKey
+    cost: float
+
+
+@dataclasses.dataclass
+class RecursiveProofRequestParameters:
+    statement_key: StatementKey
+    merge_statement_key: StatementKey
+    subtasks_labels: List[str]
     cost: float
 
 
@@ -252,72 +303,184 @@ class ProofMarketPollingParameters:
     poll_timeout: int
 
 
-class ProofMarketProofProducer(ProofProducer):
-    LOGGER = logging.getLogger(__name__ + ".ProofMarketProofProducer")
+class ProofMarketProofProducerBase(ABC, ProofProducer):
+    def __init__(
+            self,
+            proof_market_api: ProofMarketAPI,
+            polling_param: ProofMarketPollingParameters
+    ):
+        self._proof_market_api = proof_market_api
+        self._polling_param = polling_param
+
+    @property
+    @abstractmethod
+    def logger(self) -> logging.Logger:
+        pass
+
+    @property
+    def proof_cost(self):
+        return variables.PROOF_COST
+
+    async def _submit_request(
+            self, statement_key: StatementKey, payload: list[dict[str, any]], subkey: Optional[str] = None
+    ):
+        self.logger.debug({"msg": "Request payload", "value": payload})
+        request = await self._proof_market_api.submit_request_async(
+            statement_key,
+            payload,
+            self.proof_cost,
+            subkey=subkey
+        )
+        self.logger.info({"msg": f"Submitted request: key={request.key}"})
+        return request
+
+    async def _poll_for_proof(self, request_key: RequestKey) -> ProofResponse:
+        start_time = time.time()
+        self.logger.info({"msg": f"Starting polling proof market for key={request_key}"})
+        while True:
+            elapsed = time.time() - start_time
+            self.logger.debug({"msg": f"t={elapsed:.2f}s; Polling proof market for key={request_key}."})
+            request = await self._proof_market_api.get_request_async(request_key)
+            elapsed = time.time() - start_time
+            self.logger.info({"msg": f"t={elapsed:.2f}s; Request(key={request.key}) status -{request.status}"})
+
+            if request.status == RequestStatus.COMPLETED:
+                try:
+                    self.logger.info(
+                        {"msg": f"Loading proof; request_key={request.key}, proof_key={request.proof_key}"}
+                    )
+                    return await self._proof_market_api.get_proof_async(request.proof_key)
+                except Exception as e:
+                    elapsed = time.time() - start_time
+                    self.logger.warning(
+                        {"msg": f"t={elapsed:.2f}s; Failed to load proof - will continue the wait loop\n{e}"}
+                    )
+
+            next_sleep = min(self._polling_param.poll_interval * 1.0, self._polling_param.poll_timeout - elapsed)
+            if next_sleep <= 0:
+                raise TimeoutError(f"Request was not fulfilled in {self._polling_param.poll_timeout}s")
+            self.logger.debug({"msg": f"Sleeping for {next_sleep:.2f}s"})
+            await asyncio.sleep(next_sleep)
+
+
+class ProofMarketProofProducer(ProofMarketProofProducerBase):
+    def __init__(
+            self, proof_market_api: ProofMarketAPI, polling_param: ProofMarketPollingParameters,
+            request_params: ProofRequestParameters
+    ):
+        super().__init__(proof_market_api, polling_param)
+        self.request_params = request_params
+
+    @cached_property
+    def logger(self) -> logging.Logger:
+        return logging.getLogger(f"{__name__} + {self.__class__.__name__}")
+
+    def generate_proof(self, circuit_input: CircuitInput) -> bytes:
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self._generate_proof(circuit_input))
+
+    async def _generate_proof(self, circuit_input: CircuitInput) -> bytes:
+        request_submission = await self._submit_proof_request(circuit_input)
+        proof_response = await self._poll_for_proof(request_submission.key)
+        return self._proof_from_hex_str(proof_response.proof)
+
+    async def _submit_proof_request(self, circuit_input: CircuitInput) -> ProofMarketRequest:
+        self.logger.info(
+            {
+                "msg": f"Requesting poof for statement {self.request_params.statement_key} with cost "
+                       f"{self.request_params.cost}"}
+        )
+        payload = circuit_input.serialize_for_proof_generator()
+        self.logger.debug(
+            {"msg": "Request payload", "value": payload}
+        )
+        return await self._submit_request(
+            self.request_params.statement_key,
+            payload,
+        )
+
+
+class RecursiveProofMarketProofProducer(ProofMarketProofProducerBase):
+    LOGGER = logging.getLogger(__name__ + ".RecursiveProofMarketProofProducer")
 
     def __init__(
             self,
             proof_market_api: ProofMarketAPI,
-            request_params: ProofRequestParameters,
+            request_params: RecursiveProofRequestParameters,
             polling_param: ProofMarketPollingParameters
     ):
-        self._proof_market_api = proof_market_api
+        super().__init__(proof_market_api, polling_param)
         self.request_params = request_params
-        self.polling_param = polling_param
+        assert math.log(
+            len(request_params.subtasks_labels), 2
+        ).is_integer(), "Number of subtasks is not a power of two - merging won't work"
 
-    def proof_cost(self):
-        return variables.PROOF_COST
+    @cached_property
+    def logger(self) -> logging.Logger:
+        return logging.getLogger(f"{__name__} + {self.__class__.__name__}")
 
     def generate_proof(self, circuit_input: CircuitInput) -> bytes:
-        request_submission = self._submit_proof_request(circuit_input)
-        proof_response = self._poll_for_proof(request_submission.key)
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self._generate_proof(circuit_input))
+
+    async def _generate_proof(self, circuit_input: CircuitInput) -> bytes:
+        requests = list(
+            await asyncio.gather(*[
+                self._submit_leaf(circuit_input, subtask)
+                for subtask in self.request_params.subtasks_labels
+            ])
+        )
+        total_layers = math.log2(len(self.request_params.subtasks_labels))
+
+        layer = 0
+        while len(requests) > 1:
+            self.LOGGER.info({"msg": f"Layer {layer:03}/{total_layers} starting"})
+            requests = await self._process_layer(layer, requests)
+            self.LOGGER.info({"msg": f"Layer {layer:03}/{total_layers} done"})
+            layer += 1
+
+        proof_response = await self._poll_for_proof(requests[0])
         return self._proof_from_hex_str(proof_response.proof)
 
-    def _load_proof(self, request_key: RequestKey, proof_key: ProofKey) -> ProofResponse:
-        self.LOGGER.info({"msg": f"Loading proof; request_key={request_key}, proof_key={proof_key}"})
-        return self._proof_market_api.get_proof(proof_key)
+    async def _process_layer(self, layer: int, requests: list[ProofMarketRequest]) -> list[ProofMarketRequest]:
+        responses = await asyncio.gather(*[
+            self._poll_for_proof(request.key)
+            for request in requests
+        ])
+        assert len(responses) % 2 == 0, f"Odd number of responses at layer {layer}"
+        result = await asyncio.gather(*[
+            self._submit_merge(responses[idx], responses[idx + 1])
+            for idx in range(math.ceil(len(responses) / 2))
+        ])
+        return list(result)
 
-    def _poll_for_proof(self, request_key: RequestKey) -> ProofResponse:
-        start_time = time.time()
-        self.LOGGER.info({"msg": f"Starting polling proof market for key={request_key}"})
-        while True:
-            elapsed = time.time() - start_time
-            self.LOGGER.debug({"msg": f"t={elapsed:.2f}s; Polling proof market for key={request_key}."})
-            request = self._proof_market_api.get_request(request_key)
-            elapsed = time.time() - start_time
-            self.LOGGER.info({"msg": f"t={elapsed:.2f}s; Request(key={request.key}) status -{request.status}"})
-
-            if request.status == RequestStatus.COMPLETED:
-                try:
-                    self.LOGGER.info({"msg": f"Loading proof; request_key={request.key}, proof_key={request.proof_key}"})
-                    return self._load_proof(request_key=request.key, proof_key=request.proof_key)
-                except Exception as e:
-                    elapsed = time.time() - start_time
-                    self.LOGGER.warning(
-                        {"msg": f"t={elapsed:.2f}s; Failed to load proof - will continue the wait loop\n{e}"}
-                    )
-
-            next_sleep = min(self.polling_param.poll_interval * 1.0, self.polling_param.poll_timeout - elapsed)
-            if next_sleep <= 0:
-                raise TimeoutError(f"Request was not fulfilled in {self.polling_param.poll_timeout}s")
-            self.LOGGER.debug({"msg": f"Sleeping for {next_sleep:.2f}s"})
-            time.sleep(next_sleep)
-
-    def _submit_proof_request(self, circuit_input: CircuitInput) -> ProofMarketRequest:
-        self.LOGGER.info(
-            {"msg": f"Requesting poof for statement {self.request_params.statement_key} with cost {self.request_params.cost}"}
-        )
+    async def _submit_leaf(self, circuit_input: CircuitInput, subkey: Optional[str] = None) -> ProofMarketRequest:
+        self.LOGGER.info({
+            "msg": f"Requesting poof for statement {self.request_params.statement_key}(subkey: {subkey}) with "
+            f"cost {self.request_params.cost}"
+        })
         payload = circuit_input.serialize_for_proof_generator()
-        self.LOGGER.debug(
-            {"msg": "Request payload", "value": payload }
-        )
-        request = self._proof_market_api.submit_request(
+        self.LOGGER.debug({"msg": "Request payload", "value": payload})
+        return await self._submit_request(
             self.request_params.statement_key,
             payload,
-            self.request_params.cost
+            subkey
         )
-        self.LOGGER.info({"msg": f"Submitted request: key={request.key}"})
-        return request
+
+    async def _submit_merge(self, left: ProofResponse, right: ProofResponse):
+        self.LOGGER.info({
+            "msg": f"Requesting merging proofs for statement {self.request_params.statement_key} with cost "
+                   f"{self.request_params.cost}"
+        })
+        merge_payload = MergeCircuitInput(HexBytes(left.proof), HexBytes(right.proof))
+        payload = merge_payload.serialize_for_proof_generator()
+        return await self._submit_request(
+            self.request_params.statement_key,
+            payload,
+        )
+
+
+Errors = list[str]
 
 
 class ProofProducerFactory:
@@ -330,6 +493,8 @@ class ProofProducerFactory:
             factory = cls._cmdline
         elif mode == ProofProducerMode.PROOF_MARKET:
             factory = cls._proof_market
+        elif mode == ProofProducerMode.PROOF_MARKET_RECURSIVE:
+            factory = cls._proof_market_recursive
         else:
             raise ValueError(f"Proof producer mode {mode} is unsupported - please check your .env file")
 
@@ -375,8 +540,6 @@ class ProofProducerFactory:
             errors.append(f"PROOF_MARKET_CIRCUIT_STATEMENT_KEY is not set")
         if not variables.PROOF_COST:
             errors.append(f"PROOF_MARKET_URL is not set")
-        if not variables.PROOF_COST:
-            errors.append(f"PROOF_MARKET_URL is not set")
 
         if errors:
             return None, errors
@@ -396,4 +559,40 @@ class ProofProducerFactory:
             variables.PROOF_MARKET_PROOF_GENERATION_TIMEOUT
         )
 
-        return ProofMarketProofProducer(proof_market_api, request_params, polling_param), None
+        return ProofMarketProofProducer(proof_market_api, polling_param, request_params), None
+
+    @classmethod
+    def _proof_market_recursive(cls) -> (ProofProducer, Errors):
+        errors = []
+        if not variables.PROOF_MARKET_URL:
+            errors.append(f"PROOF_MARKET_URL is not set")
+        if not variables.PROOF_MARKET_CIRCUIT_STATEMENT_KEY:
+            errors.append(f"PROOF_MARKET_CIRCUIT_STATEMENT_KEY is not set")
+        if not variables.PROOF_MARKET_MERGE_STATEMENT_KEY:
+            errors.append(f"PROOF_MARKET_MERGE_STATEMENT_KEY is not set")
+        if not variables.PROOF_COST:
+            errors.append(f"PROOF_MARKET_URL is not set")
+        if not variables.PROOF_MARKET_CIRCUIT_SUBTASKS_COUNT:
+            errors.append(f"PROOF_MARKET_CIRCUIT_SUBTASKS_COUNT is not set")
+
+        if errors:
+            return None, errors
+
+        proof_market_api = ProofMarketAPI(
+            variables.PROOF_MARKET_URL,
+            variables.HTTP_REQUEST_TIMEOUT_EXECUTION,
+            variables.HTTP_REQUEST_RETRY_COUNT_CONSENSUS,
+            variables.HTTP_REQUEST_SLEEP_BEFORE_RETRY_IN_SECONDS_CONSENSUS
+        )
+        request_params = RecursiveProofRequestParameters(
+            variables.PROOF_MARKET_CIRCUIT_STATEMENT_KEY,
+            variables.PROOF_MARKET_MERGE_STATEMENT_KEY,
+            [f"{idx}" for idx in range(variables.PROOF_MARKET_CIRCUIT_SUBTASKS_COUNT)],
+            variables.PROOF_COST
+        )
+        polling_param = ProofMarketPollingParameters(
+            variables.PROOF_MARKET_POLLING_PERIOD,
+            variables.PROOF_MARKET_PROOF_GENERATION_TIMEOUT
+        )
+
+        return RecursiveProofMarketProofProducer(proof_market_api, request_params, polling_param), None

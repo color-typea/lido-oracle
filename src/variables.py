@@ -89,7 +89,7 @@ PROOF_FILE = os.getenv('PROOF_FILE', '')
 # Set if PROOF_PRODUCER_MODE == "commandline"
 PROOF_GENERATOR_BIN = os.getenv('PROOF_GENERATOR_BIN', '')
 PROOF_CIRCUIT_STATEMENT = os.getenv('PROOF_CIRCUIT_STATEMENT', '')
-# Set if PROOF_PRODUCER_MODE == "proof_market"
+# Set if PROOF_PRODUCER_MODE == "proof_market" || "proof-market-recursise
 PROOF_MARKET_URL = os.getenv('PROOF_MARKET_URL', '').split(',')
 PROOF_MARKET_USERNAME = os.getenv('PROOF_MARKET_USERNAME', '')
 PROOF_MARKET_PASSWORD = os.getenv('PROOF_MARKET_PASSWORD', '')
@@ -97,6 +97,9 @@ PROOF_MARKET_CIRCUIT_STATEMENT_KEY = os.getenv('PROOF_MARKET_CIRCUIT_STATEMENT_K
 PROOF_MARKET_POLLING_PERIOD = int(os.getenv('PROOF_MARKET_POLLING_PERIOD', 120))
 PROOF_MARKET_PROOF_GENERATION_TIMEOUT = int(os.getenv('PROOF_MARKET_PROOF_GENERATION_TIMEOUT', 1800))
 PROOF_COST = int(os.getenv('PROOF_COST', 5))  # 5 means 5USD
+# Set if PROOF_PRODUCER_MODE == "proof-market-recursise
+PROOF_MARKET_MERGE_STATEMENT_KEY=os.getenv('PROOF_MARKET_MERGE_STATEMENT_KEY', '')
+PROOF_MARKET_CIRCUIT_SUBTASKS_COUNT=int(os.getenv('PROOF_MARKET_CIRCUIT_SUBTASKS_COUNT', '16'))
 
 def check_all_required_variables():
     errors = check_uri_required_variables()

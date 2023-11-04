@@ -44,16 +44,6 @@ class ZKAccountingSanityCheck(BaseModule, ReportableModuleWithConsensusClient):
     def execute_module(self, last_finalized_blockstamp: BlockStamp) -> ModuleExecuteDelay:
         report_blockstamp = self.get_blockstamp_for_report(last_finalized_blockstamp)
 
-        report_blockstamp = ReferenceBlockStamp(
-            state_root=HexStr("0x569834987a8b44b4333f6b68a018db94d89d806b2dcf00ca148d5ff8d770a1fe"),
-            slot_number=6584736,
-            block_hash=HexStr("0xc0238cc1ef19fdfc6f2b8d64849b5d215f35cd88d39103a50ee904c90f3222e5"),
-            block_number=9748804,
-            block_timestamp=1695524832,
-            ref_slot=6584736,
-            ref_epoch=205773,
-        )
-
         if not report_blockstamp:
             return ModuleExecuteDelay.NEXT_FINALIZED_EPOCH
 
