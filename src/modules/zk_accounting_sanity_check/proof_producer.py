@@ -82,9 +82,7 @@ class InputBase(ABC):
     @classmethod
     def as_field(cls, value: bytes) -> HashType:
         assert len(value) <= 16, f"Serializing as field only support values shorter than 16 bytes, {len(value)} given"
-        low = int.from_bytes(value[:16], 'little', signed=False)
-        high = int.from_bytes(value[16:], 'little', signed=False)
-        return {"field": str(high)}
+        return {"field": str(int.from_bytes(value, 'little', signed=False))}
 
     @classmethod
     def as_hash(cls, value: bytes) -> HashType:
